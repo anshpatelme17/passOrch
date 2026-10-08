@@ -1,0 +1,113 @@
+"""Phase 2D - API schemas for the plan-preview surface.
+
+Every model is structured and JSON-safe: no free-form command strings, no
+argv lists, no executable paths.  ``extra="forbid"`` keeps unknown fields out
+of requests, and response models only ever describe selection, authorisation,
+plan steps and simulation outcomes.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict
+
+__all__ = [
+    "AuthorizationInfo",
+    "PlanInfo",
+    "PlanPreviewRequest",
+    "PlanPreviewResponse",
+    "RequestInfo",
+    "SelectionInfo",
+    "SimulationInfo",
+    "TargetListResponse",
+    "TargetSummary",
+]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PlanPreviewRequest(_Strict):
+    """Body for ``POST /api/targets/{target_id}/compatibility/plan``.
+
+    ``mode`` is a free string so an unsupported value (for example ``"real"``)
+    reaches the execution policy and is answered with a structured denial
+    rather than a transport-level error.
+    """
+
+    mode: str = "simulated"
+    reference: str = ""
+
+
+class SelectionInfo(BaseModel):
+    status: str
+    reason: str
+    selected_engine: str = ""
+    candidates: list[str] = []
+
+
+class RequestInfo(BaseModel):
+    target: str
+    engine: str
+    mode: str
+    selection_status: str
+    capability_status: str
+    selected_engine: str
+    matched_formats: list[str] = []
+    reference: str = ""
+
+
+class AuthorizationInfo(BaseModel):
+    authorized: bool
+    status: str
+    reason: str
+    detail: str = ""
+    problems: list[str] = []
+    adapter: str = ""
+    mode: str = ""
+
+
+class PlanInfo(BaseModel):
+    adapter: str
+    mode: str
+    simulated: bool
+    steps: list[str]
+    target: str
+    selected_engine: str
+    capability_status: str
+
+
+class SimulationInfo(BaseModel):
+    status: str
+    adapter: str
+    engine: str
+    target: str
+    mode: str
+    steps: list[str]
+    message: str
+    simulation_id: str
+    simulated: bool
+
+
+class PlanPreviewResponse(BaseModel):
+    """Structured plan preview - authorised or denied, never executed."""
+
+    target: str
+    selection: SelectionInfo
+    request: RequestInfo
+    authorization: AuthorizationInfo
+    plan: PlanInfo | None = None
+    simulation: SimulationInfo | None = None
+
+
+class TargetSummary(BaseModel):
+    target: str
+    description: str
+    formats: list[str]
+    enabled: bool
+    usable: bool
+
+
+class TargetListResponse(BaseModel):
+    targets: list[TargetSummary]
+    count: int = 0

@@ -1,0 +1,45 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / build output
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Type checker / static analysis caches
+.mypy_cache/
+.pytype/
+.pyre/
+
+# Editors and OS metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets (never committed)
+.env
+.env.*
+*.local
+
+# Logs
+*.log
