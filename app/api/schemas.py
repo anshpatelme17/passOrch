@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict
 
 __all__ = [
     "AuthorizationInfo",
+    "EngineInfo",
+    "EnginesResponse",
     "PlanInfo",
     "PlanPreviewRequest",
     "PlanPreviewResponse",
@@ -111,3 +113,29 @@ class TargetSummary(BaseModel):
 class TargetListResponse(BaseModel):
     targets: list[TargetSummary]
     count: int = 0
+
+
+class EngineInfo(_Strict):
+    """One engine's discovery + capability state (never raw probe output).
+
+    ``extra="forbid"`` is fail-closed: a payload key this schema does not
+    know about raises instead of being silently serialised.
+    """
+
+    engine: str
+    discovered: bool
+    binary_found: bool
+    version: str | None = None
+    operations: list[str] = []
+    snapshot_error: str | None = None
+    capability_status: str
+    formats: list[str] = []
+    targets: list[str] = []
+    source_operation: str | None = None
+    reason: str | None = None
+    parser: str | None = None
+    real_engine_compatible: bool
+
+
+class EnginesResponse(_Strict):
+    engines: list[EngineInfo]

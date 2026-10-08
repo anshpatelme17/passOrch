@@ -1,14 +1,16 @@
-"""Phase 2D - FastAPI application factory.
+"""Phase 2D/3A - FastAPI application factory.
 
-Simulation-only surface: the app exposes a read-only target list and a
-structured plan-preview endpoint.  Nothing in this module (or anywhere it
-wires up) accepts a command, argv, executable path or real execution mode.
+Simulation-only surface: the app exposes a read-only target list, a read-only
+engine capability list and a structured plan-preview endpoint.  Nothing in
+this module (or anywhere it wires up) accepts a command, argv, executable
+path or real execution mode, and no endpoint can trigger engine probing.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.routes.engines import router as engines_router
 from app.api.routes.targets import router as targets_router
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
 from app.engines.discovery.registry import DiscoveryRegistry, default_discovery_registry
@@ -48,6 +50,7 @@ def create_app(
         else ExecutionPolicy(effective_adapters)
     )
     application.include_router(targets_router)
+    application.include_router(engines_router)
 
     @application.get("/health", tags=["meta"])
     def health() -> dict[str, str]:
