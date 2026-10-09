@@ -14,6 +14,9 @@ __all__ = [
     "AuthorizationInfo",
     "EngineInfo",
     "EnginesResponse",
+    "JobInfo",
+    "JobListResponse",
+    "JobSummary",
     "PlanInfo",
     "PlanPreviewRequest",
     "PlanPreviewResponse",
@@ -139,3 +142,31 @@ class EngineInfo(_Strict):
 
 class EnginesResponse(_Strict):
     engines: list[EngineInfo]
+
+
+class JobSummary(_Strict):
+    """One audit job as shown in the (read-only) job list."""
+
+    job_id: str
+    status: str
+    created_at: int
+    target: str
+
+
+class JobInfo(_Strict):
+    """Full audit record - reuses :class:`PlanPreviewResponse` for the preview.
+
+    ``preview`` is ``None`` only for ``FAILED`` jobs (no preview was produced).
+    """
+
+    job_id: str
+    status: str
+    created_at: int
+    target: str
+    failure_reason: str = ""
+    preview: PlanPreviewResponse | None = None
+
+
+class JobListResponse(_Strict):
+    jobs: list[JobSummary] = []
+    count: int = 0
