@@ -75,6 +75,8 @@ def create_job(
     policy: ExecutionPolicy | None = None,
     mode: ExecutionMode | str = ExecutionMode.SIMULATED,
     reference: str = "",
+    instance_id: str = "",
+    instance_target_type: str = "",
     job_id: str | None = None,
     clock: Callable[[], int] | None = None,
     store: JobStore | None = None,
@@ -83,8 +85,10 @@ def create_job(
 
     ``job_id`` is a canonical lowercase UUID (freshly minted unless supplied);
     ``created_at`` is the epoch second from ``clock`` (real time by default).
-    The record is stored through ``store.put`` (Phase 3B.1 - bounded, FIFO,
-    thread-safe) so structural and duplicate failures raise
+    ``instance_id`` / ``instance_target_type`` (Phase 3E) are an optional
+    association snapshot recorded as-is and never re-resolved; both default to
+    ``""``.  The record is stored through ``store.put`` (Phase 3B.1 - bounded,
+    FIFO, thread-safe) so structural and duplicate failures raise
     :class:`~app.engines.jobs.InvalidJobError` /
     :class:`~app.engines.jobs.DuplicateJobError`.
     """
@@ -110,6 +114,8 @@ def create_job(
         target=preview.target if preview is not None else "",
         preview=None if status is JobStatus.FAILED else preview,
         failure_reason=reason,
+        instance_id=instance_id,
+        instance_target_type=instance_target_type,
     )
 
     job_store = store if isinstance(store, JobStore) else default_job_store()

@@ -265,6 +265,37 @@ def test_create_job_threads_reference_through_the_preview() -> None:
     assert job.preview.request.reference == "audit-42"
 
 
+def test_create_job_records_the_instance_association_snapshot() -> None:
+    iid = "22222222-2222-4222-8222-222222222222"
+    job = create_job(
+        "pdf-document",
+        discovery_registry=_registry(VERIFIED),
+        instance_id=iid,
+        instance_target_type="pdf-document",
+        store=JobStore(),
+    )
+    assert job.instance_id == iid
+    assert job.instance_target_type == "pdf-document"
+    assert job.as_dict()["instance_id"] == iid
+
+
+def test_create_job_without_instance_association_defaults_empty() -> None:
+    job = create_job("pdf-document", discovery_registry=_registry(VERIFIED), store=JobStore())
+    assert job.instance_id == ""
+    assert job.instance_target_type == ""
+
+
+def test_create_job_rejects_an_inconsistent_instance_association() -> None:
+    with pytest.raises(InvalidJobError):
+        create_job(
+            "pdf-document",
+            discovery_registry=_registry(VERIFIED),
+            instance_id="33333333-3333-4333-8333-333333333333",
+            instance_target_type="zip-archive",
+            store=JobStore(),
+        )
+
+
 # --------------------------------------------------------------------------- #
 # create_job: denials and failures
 # --------------------------------------------------------------------------- #

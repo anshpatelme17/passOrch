@@ -29,6 +29,7 @@ from app.engines.discovery.models import (
 )
 from app.engines.discovery.registry import FORBIDDEN_PAYLOAD_KEYS, DiscoveryRegistry
 from app.engines.jobs import JobStore, default_job_store
+from app.engines.target_instances import TargetInstanceStore
 
 JOBS_ROUTE_MODULE = Path("app/api/routes/jobs.py")
 
@@ -38,12 +39,14 @@ UNKNOWN = CapabilityStatus.UNKNOWN
 FORBIDDEN_KEYS = FORBIDDEN_REQUEST_FIELDS | FORBIDDEN_PAYLOAD_KEYS
 
 
-def _registry(status: CapabilityStatus) -> DiscoveryRegistry:
+def _registry(
+    status: CapabilityStatus, fmts: tuple[str, ...] = ("pdf",)
+) -> DiscoveryRegistry:
     registry = DiscoveryRegistry()
     registry.register(EngineSnapshot(engine=JOHN, discovered=True, binary_found=True))
     registry.set_capabilities(
         JOHN,
-        EngineCapabilities(engine=JOHN, capability_status=status, formats=("pdf",)),
+        EngineCapabilities(engine=JOHN, capability_status=status, formats=fmts),
     )
     return registry
 
@@ -400,14 +403,22 @@ def test_jobs_module_has_no_process_execution_calls_or_imports() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_job_create_request_declares_only_target_mode_and_reference() -> None:
+def test_job_create_request_declares_expected_fields() -> None:
     from app.api.schemas import JobCreateRequest
 
-    assert set(JobCreateRequest.model_fields) == {"target", "mode", "reference"}
+    assert set(JobCreateRequest.model_fields) == {
+        "target",
+        "mode",
+        "reference",
+        "instance_id",
+    }
     assert JobCreateRequest.model_config.get("extra") == "forbid"
     assert JobCreateRequest.model_fields["target"].is_required()
     assert JobCreateRequest.model_fields["mode"].default == "simulated"
     assert JobCreateRequest.model_fields["reference"].default == ""
+    # Phase 3E: optional association
+    assert JobCreateRequest.model_fields["instance_id"].default is None
+    assert JobCreateRequest.model_fields["instance_id"].is_required() is False
 
 
 def test_plan_preview_request_schema_is_unchanged_by_phase_3d() -> None:
@@ -416,3 +427,253 @@ def test_plan_preview_request_schema_is_unchanged_by_phase_3d() -> None:
     from app.api.schemas import PlanPreviewRequest
 
     assert set(PlanPreviewRequest.model_fields) == {"mode", "reference"}
+
+
+def test_job_info_exposes_association_fields() -> None:
+    from app.api.schemas import JobInfo
+
+    assert JobInfo.model_fields["instance_id"].default == ""
+    assert JobInfo.model_fields["instance_target_type"].default == ""
+    assert JobInfo.model_config.get("extra") == "forbid"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3E - optional target-instance association
+# --------------------------------------------------------------------------- #
+
+
+def _instance_client(
+    *,
+    registry: DiscoveryRegistry | None = None,
+    job_store: JobStore | None = None,
+    instance_store: TargetInstanceStore | None = None,
+) -> TestClient:
+    return TestClient(
+        create_app(
+            discovery_registry=registry if registry is not None else _registry(VERIFIED),
+            job_store=job_store if job_store is not None else JobStore(),
+            target_instance_store=(
+                instance_store if instance_store is not None else TargetInstanceStore(capacity=10)
+            ),
+        )
+    )
+
+
+def _create_instance(client: TestClient, target_type: str = "pdf-document") -> str:
+    res = client.post(
+        "/api/target-instances", json={"name": "inst", "target_type": target_type}
+    )
+    assert res.status_code == 201
+    return res.json()["id"]
+
+
+def test_post_jobs_without_instance_id_stays_compatible() -> None:
+    """Phase 3E is additive: an omitted ``instance_id`` behaves exactly as 3D."""
+
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    res = c.post("/api/jobs", json={"target": "pdf-document", "reference": "audit-1"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "simulated"
+    assert body["target"] == "pdf-document"
+    assert body["instance_id"] == ""
+    assert body["instance_target_type"] == ""
+    assert not _forbidden_keys(body)
+
+
+def test_post_jobs_with_matching_instance_is_associated() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+
+    res = c.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "simulated"
+    assert body["target"] == "pdf-document"
+    # the association is stored and the instance type snapshotted
+    assert body["instance_id"] == iid
+    assert body["instance_target_type"] == "pdf-document"
+    assert not _forbidden_keys(body)
+
+    jid = body["job_id"]
+    # and the response is backed by the persisted record
+    assert store.get(jid).instance_id == iid
+    assert store.get(jid).instance_target_type == "pdf-document"
+
+
+def test_post_jobs_instance_id_malformed_and_unknown_are_indistinguishable() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+
+    malformed = c.post(
+        "/api/jobs", json={"target": "pdf-document", "instance_id": "not-a-uuid"}
+    )
+    unknown = c.post(
+        "/api/jobs",
+        json={"target": "pdf-document", "instance_id": "00000000-0000-4000-8000-000000000000"},
+    )
+    assert malformed.status_code == 422
+    assert unknown.status_code == 422
+    assert malformed.json()["detail"]["error"] == "target_instance_not_found"
+    assert unknown.json()["detail"]["error"] == "target_instance_not_found"
+    # identical key shape: no existence oracle
+    assert malformed.json()["detail"].keys() == unknown.json()["detail"].keys()
+    # neither is stored
+    assert len(store) == 0
+
+
+def test_post_jobs_instance_type_mismatch_is_rejected() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(
+        registry=_registry(VERIFIED, fmts=("pdf", "zip", "pkzip")),
+        job_store=store,
+        instance_store=instances,
+    )
+    zip_id = _create_instance(c, "zip-archive")
+
+    res = c.post("/api/jobs", json={"target": "pdf-document", "instance_id": zip_id})
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail["error"] == "target_instance_type_mismatch"
+    assert detail["target"] == "pdf-document"
+    assert detail["instance_target_type"] == "zip-archive"
+    assert len(store) == 0
+
+
+def test_post_jobs_instance_validation_failure_stores_nothing() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+
+    for body in (
+        {"target": "pdf-document", "instance_id": "bogus"},
+        {"target": "pdf-document", "instance_id": ""},
+        {"target": "zip-archive", "instance_id": iid},
+    ):
+        res = c.post("/api/jobs", json=body)
+        assert res.status_code == 422, body
+    assert len(store) == 0
+    assert c.get("/api/jobs").json()["count"] == 0
+
+
+def test_post_jobs_with_instance_id_uses_its_own_app_store() -> None:
+    """An instance registered elsewhere cannot be resolved by this app."""
+
+    foreign = TargetInstanceStore(capacity=10)
+    other = _instance_client(instance_store=foreign)
+    foreign_id = _create_instance(other, "pdf-document")
+
+    res = _instance_client(job_store=JobStore()).post(
+        "/api/jobs", json={"target": "pdf-document", "instance_id": foreign_id}
+    )
+    assert res.status_code == 422
+    assert res.json()["detail"]["error"] == "target_instance_not_found"
+
+
+def test_job_details_remain_readable_after_instance_deleted() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+    jid = c.post(
+        "/api/jobs", json={"target": "pdf-document", "instance_id": iid}
+    ).json()["job_id"]
+
+    assert c.delete(f"/api/target-instances/{iid}").status_code == 204
+    assert c.get(f"/api/target-instances/{iid}").status_code == 404
+
+    res = c.get(f"/api/jobs/{jid}")
+    assert res.status_code == 200
+    body = res.json()
+    # association is a snapshot, never re-resolved
+    assert body["instance_id"] == iid
+    assert body["instance_target_type"] == "pdf-document"
+    assert not _forbidden_keys(body)
+
+
+def test_job_details_remain_readable_after_instance_evicted() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=1)
+    c = _instance_client(
+        registry=_registry(VERIFIED, fmts=("pdf", "zip", "pkzip")),
+        job_store=store,
+        instance_store=instances,
+    )
+    first = _create_instance(c, "pdf-document")
+    jid = c.post(
+        "/api/jobs", json={"target": "pdf-document", "instance_id": first}
+    ).json()["job_id"]
+
+    # capacity 1 -> inserting a second instance evicts the first
+    _create_instance(c, "zip-archive")
+    assert c.get(f"/api/target-instances/{first}").status_code == 404
+
+    res = c.get(f"/api/jobs/{jid}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["instance_id"] == first
+    assert body["instance_target_type"] == "pdf-document"
+
+
+def test_post_jobs_extra_fields_still_rejected_with_instance_id() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+
+    for extra in ("command", "argv", "stdout", "path", "instance"):
+        res = c.post(
+            "/api/jobs",
+            json={"target": "pdf-document", "instance_id": iid, extra: "x"},
+        )
+        assert res.status_code == 422, extra
+    assert len(store) == 0
+
+
+def test_post_jobs_missing_target_still_rejected_with_instance_id() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+    assert len(store) == 0
+
+    res = c.post("/api/jobs", json={"instance_id": iid})
+    assert res.status_code == 422
+    assert len(store) == 0
+
+
+def test_associated_job_ids_stay_distinct_from_simulation_ids() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+
+    r1 = c.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid}).json()
+    r2 = c.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid}).json()
+    assert r1["job_id"] != r2["job_id"]
+    for r in (r1, r2):
+        assert r["job_id"] != r["preview"]["simulation"]["simulation_id"]
+
+
+def test_associated_job_is_absent_from_list_summary() -> None:
+    """JobSummary is deliberately unchanged for Phase 3E."""
+
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+    iid = _create_instance(c)
+    jid = c.post(
+        "/api/jobs", json={"target": "pdf-document", "instance_id": iid}
+    ).json()["job_id"]
+
+    body = c.get("/api/jobs").json()
+    assert body["count"] == 1
+    summary = body["jobs"][0]
+    assert summary["job_id"] == jid
+    assert set(summary.keys()) == {"job_id", "status", "created_at", "target"}

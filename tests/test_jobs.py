@@ -372,6 +372,8 @@ def test_as_dict_top_level_is_the_closed_job_shape() -> None:
         "target",
         "failure_reason",
         "preview",
+        "instance_id",
+        "instance_target_type",
     }
 
 
@@ -404,7 +406,99 @@ def test_as_dict_omits_preview_key_when_there_is_no_preview() -> None:
         "created_at": 1,
         "target": "pdf-document",
         "failure_reason": "boom",
+        "instance_id": "",
+        "instance_target_type": "",
     }
+
+
+def test_as_dict_serialises_the_instance_association_snapshot() -> None:
+    iid = "11111111-1111-4111-8111-111111111111"
+    job = AuditJob(
+        job_id=_uuid(7),
+        status=JobStatus.SIMULATED,
+        created_at=2,
+        target="pdf-document",
+        failure_reason="",
+        instance_id=iid,
+        instance_target_type="pdf-document",
+    )
+    payload = job.as_dict()
+    assert payload["instance_id"] == iid
+    assert payload["instance_target_type"] == "pdf-document"
+
+
+def test_instance_association_fields_default_to_empty() -> None:
+    assert _job().instance_id == ""
+    assert _job().instance_target_type == ""
+
+
+def test_instance_association_type_must_match_the_job_target() -> None:
+    base = {
+        "job_id": _uuid(9),
+        "status": JobStatus.SIMULATED,
+        "created_at": 1,
+        "target": "pdf-document",
+    }
+    with pytest.raises(InvalidJobError):
+        AuditJob(**base, instance_id="a" * 36, instance_target_type="zip-archive")
+    with pytest.raises(InvalidJobError):
+        AuditJob(**base, instance_id="   ")
+    with pytest.raises(InvalidJobError):
+        AuditJob(**base, instance_id=123)
+    with pytest.raises(InvalidJobError):
+        AuditJob(**base, instance_target_type="pdf-document")
+
+
+def test_instance_association_must_be_a_complete_pair() -> None:
+    base = {
+        "job_id": _uuid(15),
+        "status": JobStatus.SIMULATED,
+        "created_at": 1,
+        "target": "pdf-document",
+    }
+    # an id without its type snapshot
+    with pytest.raises(InvalidJobError):
+        AuditJob(**base, instance_id="e" * 36)
+    # a type snapshot without an id
+    with pytest.raises(InvalidJobError):
+        AuditJob(**base, instance_target_type="pdf-document")
+    # both empty is the unassociated default
+    assert AuditJob(**base).instance_id == ""
+    assert AuditJob(**base).instance_target_type == ""
+
+
+def test_store_rejects_inconsistent_instance_association() -> None:
+    store = JobStore()
+    matching = AuditJob(
+        job_id=_uuid(11),
+        status=JobStatus.SIMULATED,
+        created_at=1,
+        target="pdf-document",
+        instance_id="c" * 36,
+        instance_target_type="pdf-document",
+    )
+    assert store.put(matching) is matching
+    with pytest.raises(InvalidJobError):
+        store.put(
+            AuditJob(
+                job_id=_uuid(12),
+                status=JobStatus.SIMULATED,
+                created_at=1,
+                target="pdf-document",
+                instance_id="d" * 36,
+                instance_target_type="zip-archive",
+            )
+        )
+    with pytest.raises(InvalidJobError):
+        store.put(
+            AuditJob(
+                job_id=_uuid(13),
+                status=JobStatus.SIMULATED,
+                created_at=1,
+                target="pdf-document",
+                instance_id="   ",
+            )
+        )
 
 
 def test_result_returns_the_simulation_for_a_simulated_job() -> None:

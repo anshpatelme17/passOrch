@@ -57,9 +57,7 @@ __all__ = [
 DEFAULT_JOB_STORE_CAPACITY = 100
 
 #: Canonical lowercase UUID (8-4-4-4-12).  *Not* a simulation token.
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 #: Reused forbidden-field constants, combined (never re-implemented).
 FORBIDDEN_JOB_FIELDS: frozenset[str] = frozenset(
@@ -114,6 +112,12 @@ class AuditJob:
     selection / request / authorisation / plan / simulation outcome - and is
     ``None`` only for ``FAILED`` jobs (no preview was produced).  The preview
     fields are never duplicated on the job itself.
+
+    ``instance_id`` / ``instance_target_type`` (Phase 3E) are an optional
+    association snapshot: both default to ``""`` for an unassociated job.
+    ``instance_target_type`` must equal ``target`` whenever it is set, and the
+    pair is validated together.  Neither field is ever re-resolved, so a job
+    stays readable after the instance is deleted or evicted.
     """
 
     job_id: str
@@ -122,16 +126,15 @@ class AuditJob:
     target: str
     preview: PlanPreview | None = None
     failure_reason: str = ""
+    instance_id: str = ""
+    instance_target_type: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.job_id, str):
             raise InvalidJobError("job_id must be a string")
         if not isinstance(self.status, JobStatus):
             raise InvalidJobError("status must be a JobStatus")
-        if (
-            not isinstance(self.created_at, int)
-            or isinstance(self.created_at, bool)
-        ):
+        if not isinstance(self.created_at, int) or isinstance(self.created_at, bool):
             raise InvalidJobError("created_at must be an integer")
         if not isinstance(self.target, str):
             raise InvalidJobError("target must be a string")
@@ -139,6 +142,22 @@ class AuditJob:
             raise InvalidJobError("preview must be a PlanPreview or None")
         if not isinstance(self.failure_reason, str):
             raise InvalidJobError("failure_reason must be a string")
+        if not isinstance(self.instance_id, str):
+            raise InvalidJobError("instance_id must be a string")
+        if not isinstance(self.instance_target_type, str):
+            raise InvalidJobError("instance_target_type must be a string")
+        if self.instance_id and not self.instance_id.strip():
+            raise InvalidJobError("instance_id must not be blank when set")
+        if self.instance_target_type and self.instance_target_type != self.target:
+            raise InvalidJobError(
+                "instance_target_type must equal the job target when set"
+            )
+        if bool(self.instance_id) != bool(self.instance_target_type):
+            # the association is a pair: an id without its type snapshot, or a
+            # type snapshot without an id, is a malformed record.
+            raise InvalidJobError(
+                "instance_id and instance_target_type must be set together"
+            )
 
     # -- lifecycle ---------------------------------------------------------- #
 
@@ -177,6 +196,8 @@ class AuditJob:
         }
         if self.preview is not None:
             payload["preview"] = self.preview.as_dict()
+        payload["instance_id"] = self.instance_id
+        payload["instance_target_type"] = self.instance_target_type
         return payload
 
 
@@ -189,9 +210,7 @@ class JobStore:
 
     def __init__(self, capacity: int = DEFAULT_JOB_STORE_CAPACITY) -> None:
         if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity < 1:
-            raise InvalidJobError(
-                f"job store capacity must be an integer >= 1 (got {capacity!r})"
-            )
+            raise InvalidJobError(f"job store capacity must be an integer >= 1 (got {capacity!r})")
         self._capacity = capacity
         self._jobs: OrderedDict[str, AuditJob] = OrderedDict()
         self._lock = threading.RLock()
@@ -219,12 +238,22 @@ class JobStore:
             )
         if not isinstance(job.target, str):
             raise InvalidJobError("job target must be a string")
+        if not isinstance(job.instance_id, str) or (
+            job.instance_id and not job.instance_id.strip()
+        ):
+            raise InvalidJobError("job instance_id must be a non-blank string or \"\"")
+        if not isinstance(job.instance_target_type, str):
+            raise InvalidJobError("job instance_target_type must be a string")
+        if job.instance_target_type and job.instance_target_type != job.target:
+            raise InvalidJobError("job instance_target_type must equal the job target")
+        if bool(job.instance_id) != bool(job.instance_target_type):
+            raise InvalidJobError(
+                "job instance_id and instance_target_type must be set together"
+            )
 
         forbidden = self._forbidden_keys(job.as_dict())
         if forbidden:
-            raise InvalidJobError(
-                f"job serialises forbidden fields: {', '.join(forbidden)}"
-            )
+            raise InvalidJobError(f"job serialises forbidden fields: {', '.join(forbidden)}")
 
         with self._lock:
             if job.job_id in self._jobs:

@@ -27,11 +27,25 @@ from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
 from app.engines.discovery.registry import DiscoveryRegistry
 from app.engines.execution_policy import ExecutionPolicy
 from app.engines.jobs import AuditJob, JobStore, default_job_store
+from app.engines.target_instances import (
+    TargetInstanceStore,
+    default_target_instance_store,
+)
 
 __all__ = ["create", "detail", "list_jobs", "router", "unknown_target_detail"]
 
 #: Stable machine-readable code for a target missing from the format policy.
 UNKNOWN_TARGET_ERROR = "unknown_target"
+
+#: Structured detail for an ``instance_id`` that is malformed or absent.
+#: ``target_instance_id`` is echoed verbatim (or ``""``); malformed and
+#: unknown identifiers are deliberately indistinguishable.
+INSTANCE_NOT_FOUND_ERROR = "target_instance_not_found"
+
+#: Structured detail for an instance whose ``target_type`` differs from the
+#: requested ``target``.  Both values are echoed so a client can show which
+#: of the two is wrong without a second round-trip.
+INSTANCE_TYPE_MISMATCH_ERROR = "target_instance_type_mismatch"
 
 #: Stable, structured detail for a target that is not in ``TARGET_FORMAT_POLICY``.
 #: ``supported_targets`` mirrors the read-only catalog exposed by
@@ -59,12 +73,50 @@ def unknown_target_detail(target: object) -> dict[str, object]:
     return detail
 
 
+def instance_not_found_detail(instance_id: object) -> dict[str, object]:
+    """Structured 422 detail for a malformed or absent instance ID.
+
+    The shape is identical for malformed and unknown identifiers so the
+    response cannot be used to probe which instance IDs exist.
+    """
+
+    return {
+        "error": INSTANCE_NOT_FOUND_ERROR,
+        "detail": "target instance does not exist",
+        "target_instance_id": instance_id if isinstance(instance_id, str) else "",
+    }
+
+
+def instance_type_mismatch_detail(target: str, instance_target_type: str) -> dict[str, object]:
+    """Structured 422 detail for an instance whose type is not the request target."""
+
+    return {
+        "error": INSTANCE_TYPE_MISMATCH_ERROR,
+        "detail": "target instance target_type does not match the requested target",
+        "target": target,
+        "instance_target_type": instance_target_type,
+    }
+
+
 def _resolve_job_store(request: Request) -> JobStore:
     state = request.app.state
     store = getattr(state, "job_store", None)
     if isinstance(store, JobStore):
         return store
     return default_job_store()
+
+
+def _resolve_target_instance_store(request: Request) -> TargetInstanceStore:
+    """The target-instance store **belonging to this application**.
+
+    An injected store always wins over the process-wide default, so an
+    instance registered against another app can never be resolved here.
+    """
+
+    store = getattr(request.app.state, "target_instance_store", None)
+    if isinstance(store, TargetInstanceStore):
+        return store
+    return default_target_instance_store()
 
 
 def _resolve_discovery_registry(request: Request) -> DiscoveryRegistry | None:
@@ -96,6 +148,11 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
     anything else is a structured 422 and never reaches job creation. ``mode``
     stays a free string so an unsupported value is answered by the policy with
     a structured denial instead of a transport error.
+
+    When ``instance_id`` is supplied it must name an existing instance in *this*
+    application's store whose ``target_type`` equals ``target``. The resolved
+    pair is snapshotted onto the job and never re-resolved, so a failure here
+    stores nothing and a later instance deletion cannot unread a job.
     """
 
     if body.target not in TARGET_FORMAT_POLICY:
@@ -104,6 +161,25 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
             detail=unknown_target_detail(body.target),
         )
 
+    instance_id = body.instance_id if body.instance_id is not None else ""
+    instance_target_type = ""
+    if body.instance_id is not None:
+        # An explicitly supplied (even empty) identifier is validated, never
+        # silently downgraded to "no association": that would hide client bugs
+        # the way the old implicit target default did.
+        instance = _resolve_target_instance_store(request).get(instance_id)
+        if instance is None:
+            raise HTTPException(
+                status_code=422,
+                detail=instance_not_found_detail(instance_id),
+            )
+        if instance.target_type != body.target:
+            raise HTTPException(
+                status_code=422,
+                detail=instance_type_mismatch_detail(body.target, instance.target_type),
+            )
+        instance_target_type = instance.target_type
+
     job = create_job(
         body.target,
         discovery_registry=_resolve_discovery_registry(request),
@@ -111,6 +187,8 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
         policy=_resolve_policy(request),
         mode=body.mode,
         reference=body.reference,
+        instance_id=instance_id,
+        instance_target_type=instance_target_type,
         store=_resolve_job_store(request),
     )
     return JobInfo(**job.as_dict())

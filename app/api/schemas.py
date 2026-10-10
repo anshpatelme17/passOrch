@@ -55,6 +55,12 @@ class JobCreateRequest(_Strict):
     ``TARGET_FORMAT_POLICY`` map before a job is created; an unmapped target is
     rejected at the transport level (422) instead of becoming a denial record.
 
+    ``instance_id`` (Phase 3E) is **optional**: when supplied it must name an
+    existing target instance whose ``target_type`` matches ``target``. The
+    association is snapshot onto the job record at creation, so it is never
+    re-resolved (and never invalidated) when the instance is later deleted or
+    evicted from its bounded store.
+
     ``mode`` stays a free string for the same reason as
     :class:`PlanPreviewRequest`: an unsupported value (for example ``"real"``)
     must reach :class:`~app.engines.execution_policy.ExecutionPolicy` and be
@@ -62,6 +68,7 @@ class JobCreateRequest(_Strict):
     """
 
     target: str
+    instance_id: str | None = None
     mode: str = "simulated"
     reference: str = ""
 
@@ -179,6 +186,11 @@ class JobInfo(_Strict):
     """Full audit record - reuses :class:`PlanPreviewResponse` for the preview.
 
     ``preview`` is ``None`` only for ``FAILED`` jobs (no preview was produced).
+
+    ``instance_id`` / ``instance_target_type`` (Phase 3E) are the association
+    snapshot: ``""`` when the job was created without an ``instance_id``. They
+    are never re-resolved, so a job's details stay readable after the instance
+    is deleted or evicted from the bounded store.
     """
 
     job_id: str
@@ -187,6 +199,8 @@ class JobInfo(_Strict):
     target: str
     failure_reason: str = ""
     preview: PlanPreviewResponse | None = None
+    instance_id: str = ""
+    instance_target_type: str = ""
 
 
 class JobListResponse(_Strict):
