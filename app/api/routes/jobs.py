@@ -1,4 +1,4 @@
-"""Phase 3B.3 - jobs API routes (read-only + create).
+"""Phase 2D/3B.3/3D - jobs API routes (read-only + create).
 
 Endpoints:
 * ``POST /api/jobs`` - create and record a terminal job (or denial/failure)
@@ -9,22 +9,54 @@ All routes remain simulation-only, reuse the existing orchestrator and
 Phase 3B.1 store, never trigger discovery/refresh, and never leak raw
 discovery output or command fields. Malformed and unknown IDs return the
 same ``job_not_found`` contract.
+
+Phase 3D: ``POST /api/jobs`` requires an explicit ``target`` selected by the
+caller and validated against the read-only ``TARGET_FORMAT_POLICY`` map. An
+unmapped target is a transport-level 422 with a structured detail; it is never
+guessed from ``reference`` and never defaulted.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.api.schemas import JobInfo, JobListResponse, JobSummary, PlanPreviewRequest
+from app.api.schemas import JobCreateRequest, JobInfo, JobListResponse, JobSummary
 from app.core.orchestrator.jobs import create_job
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
+from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
 from app.engines.discovery.registry import DiscoveryRegistry
 from app.engines.execution_policy import ExecutionPolicy
 from app.engines.jobs import AuditJob, JobStore, default_job_store
 
-__all__ = ["create", "detail", "list_jobs", "router"]
+__all__ = ["create", "detail", "list_jobs", "router", "unknown_target_detail"]
+
+#: Stable machine-readable code for a target missing from the format policy.
+UNKNOWN_TARGET_ERROR = "unknown_target"
+
+#: Stable, structured detail for a target that is not in ``TARGET_FORMAT_POLICY``.
+#: ``supported_targets`` mirrors the read-only catalog exposed by
+#: ``GET /api/targets`` so a caller can build a picker without a second request.
+UNKNOWN_TARGET_DETAIL = {
+    "error": UNKNOWN_TARGET_ERROR,
+    "detail": "target is not mapped to an enabled format policy",
+    "supported_targets": sorted(TARGET_FORMAT_POLICY),
+}
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+
+def unknown_target_detail(target: object) -> dict[str, object]:
+    """Structured 422 detail naming the rejected target and the valid ones.
+
+    Both the outer mapping and the ``supported_targets`` list are rebuilt per
+    call, so a caller mutating the result can never reach the shared constant
+    (or a detail already handed to another caller).
+    """
+
+    detail = dict(UNKNOWN_TARGET_DETAIL)
+    detail["supported_targets"] = list(UNKNOWN_TARGET_DETAIL["supported_targets"])
+    detail["target"] = target if isinstance(target, str) else ""
+    return detail
 
 
 def _resolve_job_store(request: Request) -> JobStore:
@@ -57,17 +89,23 @@ def _resolve_policy(request: Request) -> ExecutionPolicy:
 
 
 @router.post("", response_model=JobInfo)
-def create(request: Request, body: PlanPreviewRequest = PlanPreviewRequest()) -> JobInfo:
-    """Create and persist a terminal audit job (simulated/denied/failed)."""
+def create(request: Request, body: JobCreateRequest) -> JobInfo:
+    """Create and persist a terminal audit job (simulated/denied/failed).
 
-    reference = body.reference or ""
-    if reference == "unknown-target":
-        target = reference
-    else:
-        target = "pdf-document"
+    The target must be an entry of the read-only ``TARGET_FORMAT_POLICY`` map;
+    anything else is a structured 422 and never reaches job creation. ``mode``
+    stays a free string so an unsupported value is answered by the policy with
+    a structured denial instead of a transport error.
+    """
+
+    if body.target not in TARGET_FORMAT_POLICY:
+        raise HTTPException(
+            status_code=422,
+            detail=unknown_target_detail(body.target),
+        )
 
     job = create_job(
-        target,
+        body.target,
         discovery_registry=_resolve_discovery_registry(request),
         adapter_registry=_resolve_adapter_registry(request),
         policy=_resolve_policy(request),

@@ -548,7 +548,7 @@ def test_api_deleting_one_instance_leaves_others_and_jobs_untouched():
         "/api/target-instances", json={"name": "two", "target_type": "pdf-document"}
     ).json()
 
-    r = client.post("/api/jobs", json={"reference": "audit-1"})
+    r = client.post("/api/jobs", json={"target": "pdf-document", "reference": "audit-1"})
     assert r.status_code == 200
     job_id = r.json()["job_id"]
 

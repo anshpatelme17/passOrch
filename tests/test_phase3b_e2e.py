@@ -245,14 +245,14 @@ def test_e2e_api_forbidden_fields_never_leak() -> None:
     store = JobStore()
     reg = _registry(VERIFIED)
     c = _client(registry=reg, store=store)
-    r = c.post("/api/jobs", json={})
+    r = c.post("/api/jobs", json={"target": "pdf-document"})
     assert r.status_code == 200
     assert not _forbidden_keys(r.json())
     jid = r.json()["job_id"]
     assert not _forbidden_keys(c.get(f"/api/jobs/{jid}").json())
     assert not _forbidden_keys(c.get("/api/jobs").json())
     c2 = _client(registry=_registry(UNKNOWN), store=JobStore())
-    r2 = c2.post("/api/jobs", json={})
+    r2 = c2.post("/api/jobs", json={"target": "pdf-document"})
     assert r2.status_code == 200
     assert not _forbidden_keys(r2.json())
     jid2 = r2.json()["job_id"]
@@ -320,7 +320,7 @@ def test_e2e_denied_jobs_preserved_through_api() -> None:
     store = JobStore()
     reg = _registry(UNKNOWN)
     c = _client(registry=reg, store=store)
-    r = c.post("/api/jobs", json={})
+    r = c.post("/api/jobs", json={"target": "pdf-document"})
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "denied"

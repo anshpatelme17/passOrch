@@ -15,6 +15,7 @@ __all__ = [
     "EngineInfo",
     "EnginesResponse",
     "JobInfo",
+    "JobCreateRequest",
     "JobListResponse",
     "JobSummary",
     "PlanInfo",
@@ -43,6 +44,24 @@ class PlanPreviewRequest(_Strict):
     rather than a transport-level error.
     """
 
+    mode: str = "simulated"
+    reference: str = ""
+
+
+class JobCreateRequest(_Strict):
+    """Body for ``POST /api/jobs`` - one simulated audit job.
+
+    ``target`` is **required** and is validated against the read-only
+    ``TARGET_FORMAT_POLICY`` map before a job is created; an unmapped target is
+    rejected at the transport level (422) instead of becoming a denial record.
+
+    ``mode`` stays a free string for the same reason as
+    :class:`PlanPreviewRequest`: an unsupported value (for example ``"real"``)
+    must reach :class:`~app.engines.execution_policy.ExecutionPolicy` and be
+    answered with a structured denial, not a transport error.
+    """
+
+    target: str
     mode: str = "simulated"
     reference: str = ""
 
