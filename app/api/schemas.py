@@ -25,6 +25,9 @@ __all__ = [
     "SimulationInfo",
     "TargetListResponse",
     "TargetSummary",
+    "TargetInstance",
+    "TargetInstanceCreateRequest",
+    "TargetInstancesResponse",
 ]
 
 
@@ -169,4 +172,23 @@ class JobInfo(_Strict):
 
 class JobListResponse(_Strict):
     jobs: list[JobSummary] = []
+    count: int = 0
+
+
+class TargetInstance(_Strict):
+    id: str
+    name: str
+    target_type: str
+    description: str = ""
+    created_at: int
+
+
+class TargetInstanceCreateRequest(_Strict):
+    name: str
+    target_type: str
+    description: str = ""
+
+
+class TargetInstancesResponse(_Strict):
+    instances: list[TargetInstance] = []
     count: int = 0

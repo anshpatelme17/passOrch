@@ -13,11 +13,13 @@ from fastapi import FastAPI
 
 from app.api.routes.engines import router as engines_router
 from app.api.routes.jobs import router as jobs_router
+from app.api.routes.target_instances import router as target_instances_router
 from app.api.routes.targets import router as targets_router
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
 from app.engines.discovery.registry import DiscoveryRegistry, default_discovery_registry
 from app.engines.execution_policy import ExecutionPolicy
 from app.engines.jobs import JobStore, default_job_store
+from app.engines.target_instances import TargetInstanceStore, default_target_instance_store
 
 __all__ = ["create_app", "app"]
 
@@ -28,6 +30,7 @@ def create_app(
     adapter_registry: EngineAdapterRegistry | None = None,
     execution_policy: ExecutionPolicy | None = None,
     job_store: JobStore | None = None,
+    target_instance_store: TargetInstanceStore | None = None,
 ) -> FastAPI:
     """Build the PassOrch API with injectable read-only registries and store."""
 
@@ -49,15 +52,20 @@ def create_app(
     # A default policy is bound to the injected adapter registry so an
     # injected registry is never bypassed by the process-wide default.
     application.state.execution_policy = (
-        execution_policy
-        if execution_policy is not None else ExecutionPolicy(effective_adapters)
+        execution_policy if execution_policy is not None else ExecutionPolicy(effective_adapters)
     )
     application.state.job_store = (
         job_store if isinstance(job_store, JobStore) else default_job_store()
     )
+    application.state.target_instance_store = (
+        target_instance_store
+        if isinstance(target_instance_store, TargetInstanceStore)
+        else default_target_instance_store()
+    )
     application.include_router(targets_router)
     application.include_router(engines_router)
     application.include_router(jobs_router)
+    application.include_router(target_instances_router)
 
     @application.get("/health", tags=["meta"])
     def health() -> dict[str, str]:
