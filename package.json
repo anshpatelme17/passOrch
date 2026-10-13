@@ -1,0 +1,13 @@
+{
+  "name": "passorch-frontend-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Dependency-free JavaScript execution tests for the PassOrch browser frontend",
+  "type": "module",
+  "scripts": {
+    "test:js": "node --test \"frontend-tests/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

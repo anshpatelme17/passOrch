@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PassOrch &mdash; simulated audit planning</title>
+    <link rel="stylesheet" href="/static/css/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="app-header">
+      <div class="app-header__title">
+        <h1>PassOrch</h1>
+        <p class="app-header__subtitle">Simulated password-audit planning</p>
+      </div>
+
+      <!--
+        Simulation-only notice. Always visible, always textual - it is never
+        removed by a successful response, so no view can make the platform look
+        like it executed something.
+      -->
+      <p class="simulation-notice" id="simulation-notice" role="status">
+        Simulation only &mdash; no engine is ever executed.
+      </p>
+    </header>
+
+    <nav class="app-nav" aria-label="Primary">
+      <a href="#/dashboard" data-nav-link>Dashboard</a>
+      <a href="#/engines" data-nav-link>Engines</a>
+      <a href="#/targets" data-nav-link>Targets</a>
+      <a href="#/instances" data-nav-link>Instances</a>
+      <a href="#/plan" data-nav-link>Plan Preview</a>
+      <a href="#/jobs" data-nav-link>Jobs</a>
+    </nav>
+
+    <main class="app-main" id="main" aria-live="polite">
+      <!--
+        Every view renders into here through text nodes only. Views are
+        registered in js/app.js; unimplemented ones fall back to the honest
+        placeholder in js/components.js.
+      -->
+      <section class="panel" id="view-root" data-view-root></section>
+    </main>
+
+    <footer class="app-footer">
+      <p>
+        Read-only capability data, structured plan previews and simulated jobs.
+        No engine binary is invoked.
+      </p>
+    </footer>
+
+    <script type="module" src="/static/js/main.js"></script>
+  </body>
+</html>
