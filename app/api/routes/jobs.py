@@ -18,7 +18,7 @@ guessed from ``reference`` and never defaulted.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.api.schemas import JobCreateRequest, JobInfo, JobListResponse, JobSummary
 from app.core.orchestrator.jobs import create_job
@@ -221,3 +221,13 @@ def detail(job_id: str, request: Request) -> JobInfo:
     if job is None:
         raise HTTPException(status_code=404, detail="job_not_found")
     return JobInfo(**job.as_dict())
+
+
+@router.delete("/{job_id}")
+def delete_job(job_id: str, request: Request) -> Response:
+    """Delete a recorded job; 204 on success, 404 for malformed or unknown IDs."""
+
+    store = _resolve_job_store(request)
+    if not store.delete(job_id):
+        raise HTTPException(status_code=404, detail="job_not_found")
+    return Response(status_code=204)

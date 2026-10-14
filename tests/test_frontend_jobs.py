@@ -206,7 +206,7 @@ def test_list_reads_only_job_summary_fields() -> None:
 
 def test_list_renders_the_summary_columns_including_an_action() -> None:
     code = JOBS_CODE
-    assert '["Job", "Status", "Target", "Created", ""]' in code
+    assert '["Job", "Status", "Target", "Created", "", ""]' in code
     assert 'button("Details", () => renderDetail(job.job_id))' in code
     assert 'h("code", { text: job.job_id })' in code
     assert 'job.created_at === undefined ? "-" : String(job.created_at)' in code
@@ -553,3 +553,49 @@ def test_previous_views_are_unchanged_by_this_phase() -> None:
 def test_legacy_dashboard_is_not_imported_by_jobs() -> None:
     for spec in ('"./dashboard.js"', '"../dashboard.js"'):
         assert spec not in JOBS_RAW
+
+
+# --------------------------------------------------------------------------- #
+# Job deletion (Phase 5 Step 3)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_view_has_delete_button_in_list() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert 'button("Delete", () => confirmAndDeleteJob(job))' in src
+
+
+def test_jobs_view_has_confirmation_dialog() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "confirmAndDeleteJob" in src
+    assert "Yes, delete" in src
+    assert "Cancel" in src
+
+
+def test_jobs_view_delete_calls_api_delete() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert 'api.delete(`/api/jobs/${jobId}`)' in src
+
+
+def test_jobs_view_delete_refreshes_list_on_success() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "await renderList()" in src
+
+
+def test_jobs_view_delete_clears_detail_if_selected() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "detailSelectedJobId" in src
+    assert 'if (detailSelectedJobId === jobId)' in src
+
+
+def test_jobs_view_delete_handles_404() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "if (!res.ok)" in src
+    assert "InlineError(res.error)" in src
+    assert "The job was not deleted." in src
+
+
+def test_jobs_view_prevents_duplicate_delete_submissions() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "deletingJobId" in src
+    assert "if (deletingJobId)" in src

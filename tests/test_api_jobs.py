@@ -677,3 +677,86 @@ def test_associated_job_is_absent_from_list_summary() -> None:
     summary = body["jobs"][0]
     assert summary["job_id"] == jid
     assert set(summary.keys()) == {"job_id", "status", "created_at", "target"}
+
+
+# --------------------------------------------------------------------------- #
+# DELETE /api/jobs/{job_id}
+# --------------------------------------------------------------------------- #
+
+
+def test_delete_job_returns_204_and_empty_body() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    jid = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    res = c.delete(f"/api/jobs/{jid}")
+    assert res.status_code == 204
+    assert res.text == ""
+    assert len(store) == 0
+
+
+def test_delete_unknown_job_returns_404() -> None:
+    c = _instance_client()
+    res = c.delete("/api/jobs/00000000-0000-4000-8000-000000000000")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "job_not_found"
+
+
+def test_delete_malformed_id_returns_404() -> None:
+    c = _instance_client()
+    res = c.delete("/api/jobs/not-a-uuid")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "job_not_found"
+
+
+def test_delete_repeated_returns_204_then_404() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    jid = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    first = c.delete(f"/api/jobs/{jid}")
+    assert first.status_code == 204
+
+    second = c.delete(f"/api/jobs/{jid}")
+    assert second.status_code == 404
+    assert second.json()["detail"] == "job_not_found"
+
+
+def test_delete_leaves_other_jobs_available() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    jid1 = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+    jid2 = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    c.delete(f"/api/jobs/{jid1}")
+
+    remaining = c.get(f"/api/jobs/{jid2}")
+    assert remaining.status_code == 200
+    assert remaining.json()["job_id"] == jid2
+    assert len(store) == 1
+
+
+def test_delete_does_not_affect_list_or_detail() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    jid1 = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+    jid2 = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    c.delete(f"/api/jobs/{jid1}")
+
+    body = c.get("/api/jobs").json()
+    assert body["count"] == 1
+    assert body["jobs"][0]["job_id"] == jid2
+
+    deleted = c.get(f"/api/jobs/{jid1}")
+    assert deleted.status_code == 404
+
+
+def test_delete_uses_injected_store() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    jid = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    c.delete(f"/api/jobs/{jid}")
+    assert len(store) == 0
+    assert default_job_store().exists(jid) is False or len(store) == 0

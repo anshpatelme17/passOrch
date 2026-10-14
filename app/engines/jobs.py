@@ -295,6 +295,24 @@ class JobStore:
     def exists(self, job_id: object) -> bool:
         return self.get(job_id) is not None
 
+    def delete(self, job_id: object) -> bool:
+        """Remove the job for a canonical UUID.
+
+        Returns ``True`` when a job was removed, ``False`` when the identifier
+        was malformed or no such job existed - mirroring the indistinguishability
+        contract of :meth:`get`.
+
+        The deletion does not affect capacity or FIFO eviction of other jobs.
+        """
+
+        if not isinstance(job_id, str) or not _UUID_RE.fullmatch(job_id):
+            return False
+        with self._lock:
+            if job_id in self._jobs:
+                del self._jobs[job_id]
+                return True
+            return False
+
     def list(self) -> tuple[AuditJob, ...]:
         """Stored jobs, newest-first, deterministic, bounded by capacity."""
 

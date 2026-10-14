@@ -56,6 +56,7 @@ let listSlot = null;
 let formSlot = null;
 let formResultSlot = null;
 let detailSlot = null;
+let detailSelectedJobId = "";
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -366,13 +367,14 @@ async function renderList() {
   // JobInfo-only and are deliberately NOT read from list rows.
   render(listSlot, [
     table(
-      ["Job", "Status", "Target", "Created", ""],
+      ["Job", "Status", "Target", "Created", "", ""],
       jobs.map((job) => [
         h("code", { text: job.job_id }),
         StatusBadge(job.status || ""),
         text(job.target || "-"),
         job.created_at === undefined ? "-" : String(job.created_at),
         button("Details", () => renderDetail(job.job_id)),
+        button("Delete", () => confirmAndDeleteJob(job)),
       ])
     ),
     h("p", { class: "panel__hint", text: `${total} recorded job(s), latest first.` }),
@@ -386,9 +388,11 @@ async function renderDetail(jobId) {
     return;
   }
   if (!isNonEmptyString(jobId)) {
+    detailSelectedJobId = "";
     render(detailSlot, [empty("No job selected", "Pick a job from the list above.")]);
     return;
   }
+  detailSelectedJobId = jobId;
   render(detailSlot, [pending("Loading job details...")]);
   const res = await api.get(`/api/jobs/${jobId}`);
   if (!res.ok) {
@@ -401,6 +405,7 @@ async function renderDetail(jobId) {
   }
   const job = res.data;
   if (job === null || typeof job !== "object" || !isNonEmptyString(job.job_id)) {
+    detailSelectedJobId = "";
     render(detailSlot, [
       empty("No job returned", "The API answered without a usable job record."),
     ]);
@@ -418,6 +423,70 @@ async function renderDetail(jobId) {
           : "This job was denied by the execution policy. No engine was executed.",
     }),
   ]);
+}
+
+/* ---- delete --------------------------------------------------------------- */
+
+let deletingJobId = "";
+
+function confirmAndDeleteJob(job) {
+  const slot = listSlot;
+  if (!slot) {
+    return;
+  }
+  const label = job.target || job.job_id;
+  render(slot, [
+    h("div", {
+      class: "state state--error",
+      children: [
+        h("p", {
+          class: "state__title",
+          text: `Delete job "${label}"?`,
+        }),
+        h("p", {
+          class: "panel__hint",
+          text: "This permanently removes the recorded job. This action cannot be undone.",
+        }),
+        h("div", {
+          class: "actions",
+          children: [
+            button("Yes, delete", () => processDeleteJob(job.job_id, label), "btn btn--danger"),
+            button("Cancel", renderList),
+          ],
+        }),
+      ],
+    }),
+  ]);
+}
+
+async function processDeleteJob(jobId, label) {
+  const slot = listSlot;
+  if (!slot) {
+    return;
+  }
+  if (deletingJobId) {
+    return;
+  }
+  deletingJobId = jobId;
+  render(slot, [pending(`Deleting job "${label}"...`)]);
+  try {
+    const res = await api.delete(`/api/jobs/${jobId}`);
+    if (!res.ok) {
+      deletingJobId = "";
+      render(slot, [
+        InlineError(res.error),
+        RetryButton(renderList),
+        h("p", { class: "panel__hint", text: "The job was not deleted." }),
+      ]);
+      return;
+    }
+    await renderList();
+    if (detailSelectedJobId === jobId) {
+      renderDetail("");
+    }
+  } finally {
+    deletingJobId = "";
+  }
 }
 
 /* ---- view ----------------------------------------------------------------- */

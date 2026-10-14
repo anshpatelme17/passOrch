@@ -778,6 +778,75 @@ def test_fifo_eviction_ignores_created_at() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# JobStore: deletion
+# --------------------------------------------------------------------------- #
+
+
+def test_delete_removes_existing_job() -> None:
+    store = JobStore()
+    job = _job(job_id=_uuid(1))
+    store.put(job)
+    assert store.delete(job.job_id) is True
+    assert store.get(job.job_id) is None
+
+
+def test_delete_returns_false_for_unknown_job() -> None:
+    store = JobStore()
+    store.put(_job(job_id=_uuid(1)))
+    assert store.delete(_uuid(999)) is False
+
+
+def test_delete_returns_false_for_malformed_id() -> None:
+    store = JobStore()
+    assert store.delete("not-a-uuid") is False
+    assert store.delete("") is False
+    assert store.delete(None) is False  # type: ignore[arg-type]
+
+
+def test_delete_decrements_length() -> None:
+    store = JobStore()
+    store.put(_job(job_id=_uuid(1)))
+    store.put(_job(job_id=_uuid(2)))
+    assert len(store) == 2
+    store.delete(_uuid(1))
+    assert len(store) == 1
+
+
+def test_delete_leaves_other_jobs_unchanged() -> None:
+    store = JobStore()
+    first = _job(job_id=_uuid(1), created_at=10)
+    second = _job(job_id=_uuid(2), created_at=20)
+    store.put(first)
+    store.put(second)
+    store.delete(first.job_id)
+    assert store.get(second.job_id) is second
+    assert len(store) == 1
+
+
+def test_store_usable_after_delete_then_insert() -> None:
+    store = JobStore(capacity=3)
+    store.put(_job(job_id=_uuid(1)))
+    store.put(_job(job_id=_uuid(2)))
+    store.delete(_uuid(1))
+    store.put(_job(job_id=_uuid(3)))
+    assert len(store) == 2
+    assert store.get(_uuid(2)) is not None
+    assert store.get(_uuid(3)) is not None
+
+
+def test_delete_does_not_affect_capacity_or_eviction() -> None:
+    store = JobStore(capacity=2)
+    store.put(_job(job_id=_uuid(1)))
+    store.put(_job(job_id=_uuid(2)))
+    store.delete(_uuid(1))
+    store.put(_job(job_id=_uuid(3)))
+    store.put(_job(job_id=_uuid(4)))
+    assert len(store) == 2
+    assert store.get(_uuid(3)) is not None
+    assert store.get(_uuid(4)) is not None
+
+
+# --------------------------------------------------------------------------- #
 # JobStore: length / reset / singleton
 # --------------------------------------------------------------------------- #
 
