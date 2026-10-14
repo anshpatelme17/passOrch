@@ -538,7 +538,7 @@ def test_live_jobs_do_not_leak_forbidden_fields(client) -> None:
 
 def test_previous_views_are_unchanged_by_this_phase() -> None:
     counts = {
-        "dashboard": 4,
+        "dashboard": 5,
         "targets": 1,
         "plan": 1,
     }

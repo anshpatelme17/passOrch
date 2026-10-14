@@ -48,11 +48,14 @@ const INSTANCES = {
 let env;
 
 /** Healthy routes, with per-test overrides keyed by "METHOD /path". */
+const STATS = { total: 2, simulated: 1, denied: 1, failed: 0, by_status: { simulated: 1, denied: 1 }, by_target: { "pdf-document": 1, "zip-archive": 1 } };
+
 function start(overrides) {
   env = setup({
     "GET /health": { status: 200, body: HEALTH },
     "GET /api/engines": { status: 200, body: ENGINES },
     "GET /api/jobs": { status: 200, body: JOBS },
+    "GET /api/jobs/stats": { status: 200, body: STATS },
     "GET /api/target-instances": { status: 200, body: INSTANCES },
     ...overrides,
   });
@@ -84,7 +87,7 @@ describe("dashboard - happy path", () => {
   it("renders all four sections", async () => {
     showRoute("#/dashboard");
     await flush();
-    for (const heading of ["Application health", "Engines", "Recent jobs", "Target instances"]) {
+    for (const heading of ["Application health", "Engines", "Job statistics", "Recent jobs", "Target instances"]) {
       assert.ok(containing(root(), heading), `missing section: ${heading}`);
     }
   });
@@ -101,12 +104,12 @@ describe("dashboard - happy path", () => {
     assert.match(root().textContent, /mode: simulated/);
   });
 
-  it("requests exactly the four dashboard endpoints", async () => {
+  it("requests exactly the five dashboard endpoints", async () => {
     showRoute("#/dashboard");
     await flush();
     assert.deepEqual(
       [...new Set(env.calls.map((c) => c.url))].sort(),
-      ["/api/engines", "/api/jobs", "/api/target-instances", "/health"]
+      ["/api/engines", "/api/jobs", "/api/jobs/stats", "/api/target-instances", "/health"]
     );
   });
 
@@ -211,6 +214,7 @@ describe("dashboard - retry", () => {
       "/api/engines": { status: 200, body: ENGINES },
       "/health": { status: 200, body: HEALTH },
       "/api/jobs": { status: 200, body: JOBS },
+      "/api/jobs/stats": { status: 200, body: { total: 2, simulated: 1, denied: 1, failed: 0, by_status: { simulated: 1, denied: 1 }, by_target: { "pdf-document": 1, "zip-archive": 1 } } },
       "/api/target-instances": { status: 200, body: INSTANCES },
     });
 
@@ -223,7 +227,10 @@ describe("dashboard - retry", () => {
   });
 
   it("the retry handler is scoped to its own section", async () => {
-    start({ "GET /api/engines": { status: 500, body: { detail: "boom" } } });
+    start({
+      "GET /api/engines": { status: 500, body: { detail: "boom" } },
+      "GET /api/jobs/stats": { status: 200, body: { total: 0, simulated: 0, denied: 0, failed: 0, by_status: {}, by_target: {} } },
+    });
     showRoute("#/dashboard");
     await flush();
     const engines = containing(root(), "Engines");

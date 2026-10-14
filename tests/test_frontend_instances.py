@@ -489,7 +489,7 @@ def test_server_list_matches_the_response_schema(client) -> None:
 
 def test_previous_views_are_unchanged_by_this_phase() -> None:
     dash = _read(FRONTEND_DIR / "js" / "views" / "dashboard.js")
-    assert dash.count("api.get(") == 4
+    assert dash.count("api.get(") == 5
     targets = _read(FRONTEND_DIR / "js" / "views" / "targets.js")
     assert targets.count("api.get(") == 1
     assert "registerView(\"/targets\"" in targets

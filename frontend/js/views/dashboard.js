@@ -173,6 +173,30 @@ async function instancesSection(slot) {
   ]);
 }
 
+/* ---- section: statistics --------------------------------------------------- */
+
+async function statisticsSection(slot) {
+  render(slot, pending("Loading job statistics..."));
+  const res = await api.get("/api/jobs/stats");
+  if (!res.ok) {
+    render(slot, [InlineError(res.error), RetryButton(() => statisticsSection(slot))]);
+    return;
+  }
+  const data = res.data || {};
+  render(slot, [
+    kv([
+      ["total", CodeOrDash(data.total ?? 0)],
+      ["simulated", CodeOrDash(data.simulated ?? 0)],
+      ["denied", CodeOrDash(data.denied ?? 0)],
+      ["failed", CodeOrDash(data.failed ?? 0)],
+    ]),
+    h("p", {
+      class: "panel__hint",
+      text: "Read-only aggregation over the recorded jobs. No engine was executed.",
+    }),
+  ]);
+}
+
 /* ---- view ----------------------------------------------------------------- */
 
 /**
@@ -186,6 +210,7 @@ function renderDashboard(root) {
   const enginesSlot = h("div", { class: "section-body" });
   const jobsSlot = h("div", { class: "section-body" });
   const instancesSlot = h("div", { class: "section-body" });
+  const statsSlot = h("div", { class: "section-body" });
 
   render(root, [
     SimulationNotice(),
@@ -201,6 +226,7 @@ function renderDashboard(root) {
     ),
     Panel("Application health", healthSlot),
     Panel("Engines", enginesSlot, "Capability state as currently held by the server."),
+    Panel("Job statistics", statsSlot, "Aggregated counts over all recorded jobs."),
     Panel("Recent jobs", jobsSlot, "Up to the five most recent simulated jobs."),
     Panel("Target instances", instancesSlot, "Individual targets available for association."),
     Panel(
@@ -219,6 +245,7 @@ function renderDashboard(root) {
   // section cannot stall the rest of the page.
   healthSection(healthSlot);
   enginesSection(enginesSlot);
+  statisticsSection(statsSlot);
   jobsSection(jobsSlot);
   instancesSection(instancesSlot);
 }

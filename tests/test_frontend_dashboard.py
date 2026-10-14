@@ -51,7 +51,7 @@ def _code(path: Path) -> str:
 DASHBOARD_CODE = _code(VIEW)
 
 #: The only endpoints the dashboard may call.
-ALLOWED_ENDPOINTS = ("/health", "/api/engines", "/api/jobs", "/api/target-instances")
+ALLOWED_ENDPOINTS = ("/health", "/api/engines", "/api/jobs", "/api/jobs/stats", "/api/target-instances")
 
 #: Endpoints the dashboard must NOT touch.
 FORBIDDEN_ENDPOINTS = (
@@ -354,3 +354,38 @@ def test_entry_module_is_served() -> None:
 def test_dashboard_route_is_a_known_router_path() -> None:
     app = _read(FRONTEND_DIR / "js" / "app.js")
     assert '"/dashboard"' in app
+
+
+# --------------------------------------------------------------------------- #
+# Statistics section (Phase 6B)
+# --------------------------------------------------------------------------- #
+
+
+def test_dashboard_has_statistics_section() -> None:
+    assert "statisticsSection" in DASHBOARD_CODE
+    assert 'Panel("Job statistics"' in DASHBOARD_CODE
+
+
+def test_dashboard_statistics_calls_stats_endpoint() -> None:
+    assert 'api.get("/api/jobs/stats")' in DASHBOARD_CODE
+
+
+def test_dashboard_statistics_has_loading_state() -> None:
+    assert 'pending("Loading job statistics...")' in DASHBOARD_CODE
+
+
+def test_dashboard_statistics_has_error_state() -> None:
+    src = DASHBOARD_CODE
+    assert "InlineError(res.error)" in src
+    assert "RetryButton(() => statisticsSection(slot))" in src
+
+
+def test_dashboard_statistics_renders_counts() -> None:
+    assert "data.total" in DASHBOARD_CODE
+    assert "data.simulated" in DASHBOARD_CODE
+    assert "data.denied" in DASHBOARD_CODE
+    assert "data.failed" in DASHBOARD_CODE
+
+
+def test_dashboard_statistics_clarifies_simulation_only() -> None:
+    assert "No engine was executed" in DASHBOARD_CODE

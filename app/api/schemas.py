@@ -208,6 +208,17 @@ class JobListResponse(_Strict):
     count: int = 0
 
 
+class JobStatsResponse(_Strict):
+    """Read-only aggregation over the job store."""
+
+    total: int = 0
+    simulated: int = 0
+    denied: int = 0
+    failed: int = 0
+    by_status: dict[str, int] = {}
+    by_target: dict[str, int] = {}
+
+
 class TargetInstance(_Strict):
     id: str
     name: str

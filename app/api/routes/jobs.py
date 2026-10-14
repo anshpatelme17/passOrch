@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from app.api.schemas import JobCreateRequest, JobInfo, JobListResponse, JobSummary
+from app.api.schemas import JobCreateRequest, JobInfo, JobListResponse, JobStatsResponse, JobSummary
 from app.core.orchestrator.jobs import create_job
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
 from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
@@ -210,6 +210,39 @@ def list_jobs(request: Request) -> JobListResponse:
         for j in jobs
     ]
     return JobListResponse(jobs=summaries, count=len(summaries))
+
+
+@router.get("/stats", response_model=JobStatsResponse)
+def job_stats(request: Request) -> JobStatsResponse:
+    """Read-only aggregation over the job store."""
+
+    store = _resolve_job_store(request)
+    jobs: list[AuditJob] = list(store.list())
+
+    by_status: dict[str, int] = {}
+    by_target: dict[str, int] = {}
+    simulated = denied = failed = 0
+
+    for job in jobs:
+        status = job.status.value
+        by_status[status] = by_status.get(status, 0) + 1
+        target = job.target or ""
+        by_target[target] = by_target.get(target, 0) + 1
+        if status == "simulated":
+            simulated += 1
+        elif status == "denied":
+            denied += 1
+        elif status == "failed":
+            failed += 1
+
+    return JobStatsResponse(
+        total=len(jobs),
+        simulated=simulated,
+        denied=denied,
+        failed=failed,
+        by_status=by_status,
+        by_target=by_target,
+    )
 
 
 @router.get("/{job_id}", response_model=JobInfo)

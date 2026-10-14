@@ -116,16 +116,12 @@ def test_router_rejects_unknown_routes_by_resolving_to_dashboard() -> None:
     assert '"/dashboard"' in app_src
 
 
-def test_engine_route_intentionally_has_no_view_yet() -> None:
-    """The one remaining placeholder, asserted so the gap cannot be forgotten.
-
-    No engine view exists: engine capability data is surfaced by the Dashboard,
-    and no UI action can refresh it.
-    """
+def test_engine_route_has_a_view() -> None:
+    """Phase 6A added the engines view; the route must stay declared."""
 
     app_src = _read(JS / "app.js")
     assert 'path: "/engines"' in app_src, "the route must stay declared"
-    assert not (VIEWS / "engines.js").exists(), "an engines view must be added deliberately"
+    assert (VIEWS / "engines.js").exists(), "the engines view must exist"
 
 
 def test_placeholder_fallback_is_honest_and_not_fabricated() -> None:
@@ -192,7 +188,7 @@ def test_asset_is_served(client, rel: str) -> None:
 
 
 def test_no_unintended_files_are_served(client) -> None:
-    assert client.get("/static/js/views/engines.js").status_code == 404
+    assert client.get("/static/js/views/engines.js").status_code == 200
 
 
 # --------------------------------------------------------------------------- #

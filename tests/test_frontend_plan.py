@@ -443,7 +443,7 @@ def test_previous_views_are_unchanged_by_this_phase() -> None:
     from app.api.schemas import JobSummary
 
     dash = _read(FRONTEND_DIR / "js" / "views" / "dashboard.js")
-    assert dash.count("api.get(") == 4
+    assert dash.count("api.get(") == 5
     targets = _read(FRONTEND_DIR / "js" / "views" / "targets.js")
     assert targets.count("api.get(") == 1
     instances = _read(FRONTEND_DIR / "js" / "views" / "instances.js")

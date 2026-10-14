@@ -760,3 +760,74 @@ def test_delete_uses_injected_store() -> None:
     c.delete(f"/api/jobs/{jid}")
     assert len(store) == 0
     assert default_job_store().exists(jid) is False or len(store) == 0
+
+
+# --------------------------------------------------------------------------- #
+# GET /api/jobs/stats
+# --------------------------------------------------------------------------- #
+
+
+def test_stats_empty_store() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    res = c.get("/api/jobs/stats")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 0
+    assert body["simulated"] == 0
+    assert body["denied"] == 0
+    assert body["failed"] == 0
+    assert body["by_status"] == {}
+    assert body["by_target"] == {}
+
+
+def test_stats_counts_by_status_and_target() -> None:
+    store = JobStore()
+    instances = TargetInstanceStore(capacity=10)
+    c = _instance_client(job_store=store, instance_store=instances)
+
+    iid = _create_instance(c, "pdf-document")
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid})
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid})
+    c.post("/api/jobs", json={"target": "pdf-document", "mode": "real"})  # denied
+    c.post("/api/jobs", json={"target": "zip-archive", "instance_id": _create_instance(c, "zip-archive")})  # denied (no verified capability)
+
+    res = c.get("/api/jobs/stats")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 4
+    assert body["simulated"] == 2
+    assert body["denied"] == 2
+    assert body["failed"] == 0
+    assert body["by_status"]["simulated"] == 2
+    assert body["by_status"]["denied"] == 2
+    assert body["by_target"]["pdf-document"] == 3
+    assert body["by_target"]["zip-archive"] == 1
+
+
+def test_stats_consistency_total_equals_sum_of_statuses() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "pdf-document", "mode": "real"})
+
+    body = c.get("/api/jobs/stats").json()
+    assert body["total"] == body["simulated"] + body["denied"] + body["failed"]
+    assert sum(body["by_status"].values()) == body["total"]
+    assert sum(body["by_target"].values()) == body["total"]
+
+
+def test_stats_uses_injected_store() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    body = c.get("/api/jobs/stats").json()
+    assert body["total"] == 1
+
+
+def test_stats_does_not_trigger_discovery() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs/stats")
+    assert res.status_code == 200
+    assert "engines" not in res.text

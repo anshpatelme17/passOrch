@@ -15,6 +15,7 @@ import "./views/targets.js";
 import "./views/instances.js";
 import "./views/plan.js";
 import "./views/jobs.js";
+import "./views/engines.js";
 import { start } from "./app.js";
 
 start();
