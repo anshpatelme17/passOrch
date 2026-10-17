@@ -210,8 +210,7 @@ class ParsedCapabilities:
 
     @property
     def provenance(self) -> ParserProvenance:
-        return ParserProvenance(engine=self.engine, operation=self.operation,
-                                parser=self.parser)
+        return ParserProvenance(engine=self.engine, operation=self.operation, parser=self.parser)
 
 
 class FormatCapabilityParser:
@@ -224,8 +223,7 @@ class FormatCapabilityParser:
 
     @property
     def provenance(self) -> ParserProvenance:
-        return ParserProvenance(engine=self.engine, operation=self.operation,
-                                parser=self.name)
+        return ParserProvenance(engine=self.engine, operation=self.operation, parser=self.name)
 
     def matches(self, engine: object, operation: object) -> bool:
         return engine == self.engine and operation == self.operation
@@ -242,8 +240,15 @@ class FormatCapabilityParser:
 
     # -- helpers shared by concrete parsers ------------------------------- #
 
-    def _unknown(self, reason: str, *, operation: str, token_count: int = 0,
-                 rejected: int = 0, truncated: bool = False) -> ParsedCapabilities:
+    def _unknown(
+        self,
+        reason: str,
+        *,
+        operation: str,
+        token_count: int = 0,
+        rejected: int = 0,
+        truncated: bool = False,
+    ) -> ParsedCapabilities:
         return ParsedCapabilities(
             engine=self.engine,
             operation=operation,

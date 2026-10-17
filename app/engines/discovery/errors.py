@@ -34,9 +34,7 @@ class OperationNotAllowedError(DiscoveryError):
     """Raised when an operation is not on the immutable discovery allowlist."""
 
     def __init__(self, engine: object, operation: object) -> None:
-        super().__init__(
-            f"operation {operation!r} is not allowlisted for engine {engine!r}"
-        )
+        super().__init__(f"operation {operation!r} is not allowlisted for engine {engine!r}")
         self.engine = engine
         self.operation = operation
 

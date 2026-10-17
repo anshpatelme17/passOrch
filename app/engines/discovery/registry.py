@@ -108,8 +108,7 @@ class DiscoveryRegistry:
             raise UnknownEngineError(engine)
         if capabilities.engine != engine:
             raise RegistryError(
-                f"capability evidence for {capabilities.engine!r} cannot be "
-                f"attached to {engine!r}"
+                f"capability evidence for {capabilities.engine!r} cannot be attached to {engine!r}"
             )
         existing = self._entries.get(engine)
         snapshot = existing.snapshot if existing else EngineSnapshot(engine=engine)

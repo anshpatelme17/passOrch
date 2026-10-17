@@ -27,7 +27,11 @@ from app.engines.discovery.models import (
     JOHN,
     CapabilityStatus,
 )
-from app.engines.discovery.registry import DiscoveryRegistry, RegistryEntry, default_discovery_registry
+from app.engines.discovery.registry import (
+    DiscoveryRegistry,
+    RegistryEntry,
+    default_discovery_registry,
+)
 
 __all__ = [
     "DISCOVERY_PRIORITIES",
@@ -84,9 +88,7 @@ class SelectionCandidate:
                 f"(got {self.capability_status.value!r} for {self.engine!r})"
             )
         if not self.discovered:
-            raise SelectionError(
-                f"candidate {self.engine!r} must come from a discovered engine"
-            )
+            raise SelectionError(f"candidate {self.engine!r} must come from a discovered engine")
         object.__setattr__(self, "formats", tuple(self.formats))
         object.__setattr__(self, "targets", tuple(self.targets))
 
@@ -157,9 +159,7 @@ class EngineSelectionPolicy:
     def is_eligible(self, entry: RegistryEntry) -> bool:
         """Only discovered engines with VERIFIED evidence are eligible."""
 
-        return entry.snapshot.discovered and entry.capability_status is (
-            CapabilityStatus.VERIFIED
-        )
+        return entry.snapshot.discovered and entry.capability_status is (CapabilityStatus.VERIFIED)
 
     def candidate_for(self, entry: RegistryEntry) -> SelectionCandidate | None:
         if not self.is_eligible(entry):

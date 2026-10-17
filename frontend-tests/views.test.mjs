@@ -3,6 +3,7 @@ import { describe, it, beforeEach } from "node:test";
 
 import { ROUTES, parseHash, showRoute, hasView, getView, titleFor } from "../frontend/js/app.js";
 import "../frontend/js/views/dashboard.js";
+import "../frontend/js/views/engines.js";
 import "../frontend/js/views/targets.js";
 import "../frontend/js/views/instances.js";
 import "../frontend/js/views/plan.js";
@@ -79,14 +80,13 @@ describe("navigation", () => {
     assert.equal(info.requested, "/nope");
   });
 
-  it("renders an honest placeholder for the unbuilt Engines route", async () => {
+  it("renders the Engines view", async () => {
     const info = showRoute("#/engines");
     assert.equal(info.path, "/engines");
-    assert.equal(info.rendered, false, "Engines must not claim to be implemented");
+    assert.equal(info.rendered, true, "Engines view must be implemented");
     await flush();
     const text = allText(globalThis.document.getElementById("view-root"));
-    assert.match(text, /not implemented yet/);
-    assert.match(text, /nothing is simulated on screen/);
+    assert.match(text, /Simulation only/);
   });
 
   it("navigates hash changes through the registered listener", async () => {

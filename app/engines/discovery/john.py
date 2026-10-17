@@ -49,9 +49,7 @@ def parse_formats(output: str, *, operation: str = JOHN_FORMAT_OPERATION) -> Par
 
     parser = get_parser(JOHN_ENGINE, operation)
     if parser is None:
-        raise CapabilityParseError(
-            f"no John capability parser is bound to operation {operation!r}"
-        )
+        raise CapabilityParseError(f"no John capability parser is bound to operation {operation!r}")
     return parser.parse(output, engine=JOHN_ENGINE, operation=operation)
 
 
@@ -140,9 +138,7 @@ def capabilities_from_probes(probes: Mapping[str, ProbeResult]) -> EngineCapabil
     """Build John capability evidence from a probe mapping."""
 
     for operation, probe in probes.items():
-        if probe.engine != JOHN_ENGINE or not DISCOVERY_ALLOWLIST.allows(
-            JOHN_ENGINE, operation
-        ):
+        if probe.engine != JOHN_ENGINE or not DISCOVERY_ALLOWLIST.allows(JOHN_ENGINE, operation):
             return EngineCapabilities(
                 engine=JOHN_ENGINE,
                 capability_status=CapabilityStatus.ERROR,

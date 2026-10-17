@@ -195,8 +195,7 @@ class ExecutionPolicy:
             return PolicyDecision.deny(
                 REASON_NON_SIMULATION,
                 detail=(
-                    f"mode {mode.value!r} is not authorised; PassOrch only "
-                    "performs simulations"
+                    f"mode {mode.value!r} is not authorised; PassOrch only performs simulations"
                 ),
                 mode=mode.value,
             )

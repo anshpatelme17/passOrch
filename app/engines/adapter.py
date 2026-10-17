@@ -375,13 +375,9 @@ class MockEngineAdapter:
         if not isinstance(plan, ExecutionPlan):
             raise InvalidPlanError("simulate() requires an ExecutionPlan")
         if plan.adapter != self.name:
-            raise AdapterError(
-                f"plan for {plan.adapter!r} cannot run on adapter {self.name!r}"
-            )
+            raise AdapterError(f"plan for {plan.adapter!r} cannot run on adapter {self.name!r}")
         if plan.mode is not ExecutionMode.SIMULATED or not plan.simulated:
-            raise SimulationNotAllowedError(
-                "MockEngineAdapter only produces simulation results"
-            )
+            raise SimulationNotAllowedError("MockEngineAdapter only produces simulation results")
 
         token = _simulation_token(plan)
         return SimulationResult(
@@ -399,9 +395,7 @@ class MockEngineAdapter:
 
 
 def _simulation_token(plan: ExecutionPlan) -> str:
-    payload = "\x1f".join(
-        [plan.adapter, plan.target, plan.mode.value, *plan.steps]
-    )
+    payload = "\x1f".join([plan.adapter, plan.target, plan.mode.value, *plan.steps])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 

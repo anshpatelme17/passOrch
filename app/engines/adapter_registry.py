@@ -59,9 +59,7 @@ class EngineAdapterRegistry:
         if adapter is None:
             raise AdapterError("an adapter instance is required")
         if not isinstance(adapter, EngineAdapter):
-            raise AdapterError(
-                "an adapter must expose a name and a simulate(plan) method"
-            )
+            raise AdapterError("an adapter must expose a name and a simulate(plan) method")
 
         name = getattr(adapter, "name", None)
         if not isinstance(name, str) or not name.strip():
@@ -78,15 +76,10 @@ class EngineAdapterRegistry:
 
     @staticmethod
     def _reject_forbidden_surface(adapter: EngineAdapter, name: str) -> None:
-        exposed = sorted(
-            field
-            for field in FORBIDDEN_REQUEST_FIELDS
-            if hasattr(adapter, field)
-        )
+        exposed = sorted(field for field in FORBIDDEN_REQUEST_FIELDS if hasattr(adapter, field))
         if exposed:
             raise AdapterError(
-                f"adapter {name!r} exposes a forbidden execution surface: "
-                f"{', '.join(exposed)}"
+                f"adapter {name!r} exposes a forbidden execution surface: {', '.join(exposed)}"
             )
 
     def reset(self) -> None:

@@ -70,8 +70,11 @@ class DiscoveryAllowlist:
                 raise OperationNotAllowedError(engine, "<empty allowlist>")
             seen: set[str] = set()
             for op in ops:
-                if not isinstance(op, str) or not op or op != op.strip() or any(
-                    ch.isspace() for ch in op
+                if (
+                    not isinstance(op, str)
+                    or not op
+                    or op != op.strip()
+                    or any(ch.isspace() for ch in op)
                 ):
                     raise OperationNotAllowedError(engine, op)
                 if op in seen:

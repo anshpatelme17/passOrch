@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import { showRoute } from "../frontend/js/app.js";
 import "../frontend/js/views/dashboard.js";
+import "../frontend/js/views/engines.js";
 import "../frontend/js/views/targets.js";
 import "../frontend/js/views/instances.js";
 import "../frontend/js/views/plan.js";
@@ -196,19 +197,19 @@ describe("safety - no fabricated engine behavior", () => {
     }
   });
 
-  it("the Engines route remains an honest placeholder", async () => {
+  it("the Engines route renders the engines view", async () => {
     const info = showRoute("#/engines");
-    assert.equal(info.rendered, false);
+    assert.equal(info.rendered, true);
     await flush();
     const text = globalThis.document.getElementById("view-root").textContent;
-    assert.match(text, /not implemented yet/);
+    assert.match(text, /Simulation only/);
   });
 });
 
 describe("safety - module hygiene", () => {
   it("all view modules are registered and imported", async () => {
     const { hasView } = await import("../frontend/js/app.js");
-    for (const path of ["/dashboard", "/targets", "/instances", "/plan", "/jobs"]) {
+    for (const path of ["/dashboard", "/engines", "/targets", "/instances", "/plan", "/jobs"]) {
       assert.equal(hasView(path), true, path);
     }
   });

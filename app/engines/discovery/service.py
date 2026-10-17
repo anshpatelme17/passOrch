@@ -121,8 +121,7 @@ class RefreshReport:
             raise UnknownEngineError(self.engine)
         if not isinstance(self.capability_status, CapabilityStatus):
             raise DiscoveryError(
-                f"refresh reports must carry a CapabilityStatus (got "
-                f"{self.capability_status!r})"
+                f"refresh reports must carry a CapabilityStatus (got {self.capability_status!r})"
             )
         object.__setattr__(self, "discovered", bool(self.discovered))
         object.__setattr__(
@@ -276,9 +275,7 @@ class CapabilityRefreshService:
             binary_found=True,
             operations=tuple(probes),
         )
-        return self._store(
-            engine, snapshot, capabilities, discovered=True, truncated=truncated
-        )
+        return self._store(engine, snapshot, capabilities, discovered=True, truncated=truncated)
 
     def _capabilities_for(
         self, engine: str, probes: Mapping[str, ProbeResult]
