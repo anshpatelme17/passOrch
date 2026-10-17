@@ -57,6 +57,7 @@ let formSlot = null;
 let formResultSlot = null;
 let detailSlot = null;
 let detailSelectedJobId = "";
+let paginationState = { limit: 50, offset: 0, total: 0, statusFilter: "", targetFilter: "" };
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -348,7 +349,13 @@ async function renderList() {
     return;
   }
   render(listSlot, pending("Loading jobs..."));
-  const res = await api.get("/api/jobs");
+  const params = new URLSearchParams();
+  if (paginationState.statusFilter) params.set("status", paginationState.statusFilter);
+  if (paginationState.targetFilter) params.set("target", paginationState.targetFilter);
+  params.set("limit", String(paginationState.limit));
+  params.set("offset", String(paginationState.offset));
+  const qs = params.toString();
+  const res = await api.get(qs ? "/api/jobs?" + qs : "/api/jobs");
   if (!res.ok) {
     render(listSlot, [InlineError(res.error), RetryButton(renderList)]);
     return;
@@ -356,12 +363,40 @@ async function renderList() {
   const jobs = asArray(res.data && res.data.jobs).filter(
     (j) => j !== null && typeof j === "object" && isNonEmptyString(j.job_id)
   );
-  const total = res.data && typeof res.data.count === "number" ? res.data.count : jobs.length;
+  const total = res.data && typeof res.data.total === "number" ? res.data.total : jobs.length;
+  paginationState.total = total;
 
-  if (jobs.length === 0) {
+  if (jobs.length === 0 && paginationState.offset === 0) {
     render(listSlot, [empty("No jobs recorded yet", "Create a simulated job with the form above.")]);
     return;
   }
+  if (jobs.length === 0) {
+    paginationState.offset = 0;
+    renderList();
+    return;
+  }
+
+  const currentPage = Math.floor(paginationState.offset / paginationState.limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / paginationState.limit));
+
+  const paginationControls = h("div", {
+    class: "pagination",
+    children: [
+      button("Previous", () => {
+        if (paginationState.offset > 0) {
+          paginationState.offset = Math.max(0, paginationState.offset - paginationState.limit);
+          renderList();
+        }
+      }, "btn"),
+      h("span", { class: "pagination__info", text: `Page ${currentPage} of ${totalPages} (${total} total)` }),
+      button("Next", () => {
+        if (paginationState.offset + paginationState.limit < total) {
+          paginationState.offset = paginationState.offset + paginationState.limit;
+          renderList();
+        }
+      }, "btn"),
+    ],
+  });
 
   // JobSummary only: `instance_id`, `failure_reason` and `preview` are
   // JobInfo-only and are deliberately NOT read from list rows.
@@ -378,6 +413,7 @@ async function renderList() {
       ])
     ),
     h("p", { class: "panel__hint", text: `${total} recorded job(s), latest first.` }),
+    paginationControls,
   ]);
 }
 

@@ -106,7 +106,7 @@ async function jobsSection(slot) {
     return;
   }
   const jobs = asArray(res.data && res.data.jobs);
-  const total = res.data && typeof res.data.count === "number" ? res.data.count : jobs.length;
+  const total = res.data && typeof res.data.total === "number" ? res.data.total : jobs.length;
   if (jobs.length === 0) {
     render(slot, [
       empty("No jobs recorded yet", "Simulated jobs appear here once one is submitted."),
@@ -144,7 +144,7 @@ async function instancesSection(slot) {
   }
   const instances = asArray(res.data && res.data.instances);
   const total =
-    res.data && typeof res.data.count === "number" ? res.data.count : instances.length;
+    res.data && typeof res.data.total === "number" ? res.data.total : instances.length;
   if (instances.length === 0) {
     render(slot, [
       empty(

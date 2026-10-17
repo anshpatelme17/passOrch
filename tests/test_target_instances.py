@@ -444,7 +444,10 @@ def _client(capacity: int = 10) -> tuple[TestClient, TargetInstanceStore]:
 def test_api_create_list_get_delete_success():
     client, store = _client()
 
-    assert client.get("/api/target-instances").json() == {"instances": [], "count": 0}
+    body = client.get("/api/target-instances").json()
+    assert body["instances"] == []
+    assert body["count"] == 0
+    assert body["total"] == 0
 
     r = client.post(
         "/api/target-instances",
@@ -552,8 +555,8 @@ def test_api_deleting_one_instance_leaves_others_and_jobs_untouched():
     assert r.status_code == 200
     job_id = r.json()["job_id"]
 
-    r = client.delete(f"/api/target-instances/{first['id']}")
-    assert r.status_code == 204
+    deleted = client.delete(f"/api/target-instances/{first['id']}")
+    assert deleted.status_code == 204
 
     assert client.get(f"/api/target-instances/{first['id']}").status_code == 404
     assert client.get(f"/api/target-instances/{second['id']}").status_code == 200
@@ -562,6 +565,199 @@ def test_api_deleting_one_instance_leaves_others_and_jobs_untouched():
     assert r.status_code == 200
     assert r.json()["job_id"] == job_id
     assert client.get("/api/jobs").json()["count"] == 1
+
+    remaining = client.get("/api/target-instances").json()
+    assert remaining["count"] == 1
+    assert remaining["instances"][0]["id"] == second["id"]
+
+
+# ---------------------------------------------------------------------------
+# Target-instance pagination (Phase 7B)
+# ---------------------------------------------------------------------------
+
+
+def test_target_instances_pagination_default():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(3):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 3
+    assert body["count"] == 3
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+
+
+def test_target_instances_pagination_explicit_limit():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(5):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?limit=2")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 2
+    assert body["limit"] == 2
+
+
+def test_target_instances_pagination_offset():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(5):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?limit=2&offset=2")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 2
+    assert body["offset"] == 2
+
+
+def test_target_instances_pagination_deterministic_order():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(5):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    page1 = client.get("/api/target-instances?limit=2&offset=0").json()
+    page2 = client.get("/api/target-instances?limit=2&offset=2").json()
+    page3 = client.get("/api/target-instances?limit=2&offset=4").json()
+
+    all_ids = [inst["id"] for inst in page1["instances"] + page2["instances"] + page3["instances"]]
+    assert len(all_ids) == 5
+    assert len(set(all_ids)) == 5
+
+
+def test_target_instances_pagination_empty():
+    app = create_app(target_instance_store=TargetInstanceStore(capacity=10))
+    client = TestClient(app)
+
+    res = client.get("/api/target-instances")
+    body = res.json()
+    assert body["total"] == 0
+    assert body["count"] == 0
+    assert body["instances"] == []
+
+
+def test_target_instances_pagination_offset_beyond_end():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    client.post("/api/target-instances", json={"name": "n", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?offset=100")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 0
+    assert body["instances"] == []
+
+
+def test_target_instances_invalid_limit():
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/target-instances?limit=0").status_code == 422
+    assert client.get("/api/target-instances?limit=-1").status_code == 422
+    assert client.get("/api/target-instances?limit=101").status_code == 422
+
+
+def test_target_instances_invalid_offset():
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/target-instances?offset=-1").status_code == 422
+
+
+def test_target_instances_pagination_does_not_trigger_discovery():
+    app = create_app()
+    client = TestClient(app)
+    res = client.get("/api/target-instances?limit=10&offset=0")
+    assert res.status_code == 200
+    assert "engines" not in res.text
+
+
+def test_target_instances_ordering_insertion_order():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    client.post("/api/target-instances", json={"name": "first", "target_type": "pdf-document"})
+    client.post("/api/target-instances", json={"name": "second", "target_type": "pdf-document"})
+    client.post("/api/target-instances", json={"name": "third", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances")
+    body = res.json()
+    names = [inst["name"] for inst in body["instances"]]
+    assert names == ["first", "second", "third"]
+
+
+def test_target_instances_pagination_middle_page():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(10):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?limit=3&offset=3")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 3
+    assert body["offset"] == 3
+
+
+def test_target_instances_pagination_final_page():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(10):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?limit=3&offset=9")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 1
+
+
+def test_target_instances_max_limit():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    for i in range(10):
+        client.post("/api/target-instances", json={"name": f"n{i}", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?limit=100")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 10
+    assert body["limit"] == 100
+
+
+def test_target_instances_min_limit():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    client = TestClient(app)
+
+    client.post("/api/target-instances", json={"name": "n", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?limit=1")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["limit"] == 1
 
 
 def test_api_does_not_modify_static_target_catalog():

@@ -278,7 +278,9 @@ def test_get_jobs_empty_list() -> None:
     res = client.get("/api/jobs")
     assert res.status_code == 200
     body = res.json()
-    assert body == {"jobs": [], "count": 0}
+    assert body["jobs"] == []
+    assert body["count"] == 0
+    assert body["total"] == 0
     assert not _forbidden_keys(body)
 
 
@@ -831,3 +833,294 @@ def test_stats_does_not_trigger_discovery() -> None:
     res = c.get("/api/jobs/stats")
     assert res.status_code == 200
     assert "engines" not in res.text
+
+
+# --------------------------------------------------------------------------- #
+# Job filtering and pagination (Phase 7B)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_no_filters_returns_all() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "zip-archive"})
+
+    res = c.get("/api/jobs")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 2
+    assert body["count"] == 2
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+
+
+def test_jobs_filter_by_status() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "pdf-document", "mode": "real"})
+
+    res = c.get("/api/jobs?status=simulated")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["jobs"][0]["status"] == "simulated"
+
+    res = c.get("/api/jobs?status=denied")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["jobs"][0]["status"] == "denied"
+
+
+def test_jobs_filter_by_target() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "zip-archive"})
+
+    res = c.get("/api/jobs?target=pdf-document")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["jobs"][0]["target"] == "pdf-document"
+
+
+def test_jobs_filter_by_status_and_target() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "pdf-document", "mode": "real"})
+    c.post("/api/jobs", json={"target": "zip-archive"})
+
+    res = c.get("/api/jobs?status=simulated&target=pdf-document")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+
+
+def test_jobs_filter_no_matches() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?status=failed")
+    body = res.json()
+    assert body["total"] == 0
+    assert body["count"] == 0
+    assert body["jobs"] == []
+
+
+def test_jobs_pagination_default() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for _ in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 5
+    assert body["limit"] == 50
+
+
+def test_jobs_pagination_explicit_limit() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for _ in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?limit=2")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 2
+    assert body["limit"] == 2
+
+
+def test_jobs_pagination_offset() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+
+    res = c.get("/api/jobs?limit=2&offset=2")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 2
+    assert body["offset"] == 2
+
+
+def test_jobs_pagination_deterministic_order() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+
+    page1 = c.get("/api/jobs?limit=2&offset=0").json()
+    page2 = c.get("/api/jobs?limit=2&offset=2").json()
+    page3 = c.get("/api/jobs?limit=2&offset=4").json()
+
+    all_ids = [j["job_id"] for j in page1["jobs"] + page2["jobs"] + page3["jobs"]]
+    assert len(all_ids) == 5
+    assert len(set(all_ids)) == 5
+
+
+def test_jobs_pagination_with_filters() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "pdf-document", "mode": "real"})
+    c.post("/api/jobs", json={"target": "zip-archive"})
+
+    res = c.get("/api/jobs?status=simulated&limit=1")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+
+
+def test_jobs_pagination_empty_results() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs")
+    body = res.json()
+    assert body["total"] == 0
+    assert body["count"] == 0
+    assert body["jobs"] == []
+
+
+def test_jobs_pagination_offset_beyond_end() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?offset=100")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 0
+    assert body["jobs"] == []
+
+
+def test_jobs_invalid_limit_zero() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs?limit=0")
+    assert res.status_code == 422
+
+
+def test_jobs_invalid_limit_negative() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs?limit=-1")
+    assert res.status_code == 422
+
+
+def test_jobs_invalid_limit_too_large() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs?limit=101")
+    assert res.status_code == 422
+
+
+def test_jobs_invalid_offset_negative() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs?offset=-1")
+    assert res.status_code == 422
+
+
+def test_jobs_filtering_does_not_trigger_discovery() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs?status=simulated&target=pdf-document&limit=10&offset=0")
+    assert res.status_code == 200
+    assert "engines" not in res.text
+
+
+def test_jobs_ordering_newest_first() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs")
+    body = res.json()
+    assert body["count"] == 3
+    assert body["total"] == 3
+    ids = [j["job_id"] for j in body["jobs"]]
+    assert len(ids) == 3
+    assert len(set(ids)) == 3
+
+
+def test_jobs_filtering_before_pagination() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(10):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+    for i in range(5):
+        c.post("/api/jobs", json={"target": "zip-archive", "reference": f"zip-{i}"})
+
+    res = c.get("/api/jobs?target=pdf-document&limit=3&offset=0")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 3
+    assert all(j["target"] == "pdf-document" for j in body["jobs"])
+
+
+def test_jobs_total_reflects_filtered_count() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document"})
+    for i in range(3):
+        c.post("/api/jobs", json={"target": "zip-archive"})
+
+    res = c.get("/api/jobs?target=pdf-document")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 5
+
+
+def test_jobs_pagination_middle_page() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(10):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+
+    res = c.get("/api/jobs?limit=3&offset=3")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 3
+    assert body["offset"] == 3
+
+
+def test_jobs_pagination_final_page() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(10):
+        c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?limit=3&offset=9")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 1
+
+
+def test_jobs_max_limit() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(10):
+        c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?limit=100")
+    body = res.json()
+    assert body["total"] == 10
+    assert body["count"] == 10
+    assert body["limit"] == 100
+
+
+def test_jobs_min_limit() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?limit=1")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["limit"] == 1

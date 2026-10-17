@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from app.api.schemas import (
     TargetInstance,
     TargetInstanceCreateRequest,
-    TargetInstancesResponse,
+    TargetInstancePageResponse,
 )
 from app.core.orchestrator.target_instances import create_target_instance
 from app.engines.target_instances import (
@@ -54,10 +54,21 @@ def create_target_instance_endpoint(
     )
 
 
-@router.get("/api/target-instances", response_model=TargetInstancesResponse)
-def list_target_instances(request: Request) -> TargetInstancesResponse:
+@router.get("/api/target-instances", response_model=TargetInstancePageResponse)
+def list_target_instances(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+) -> TargetInstancePageResponse:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be non-negative")
+
     store = _get_store(request)
     records = store.list()
+    total = len(records)
+    paginated = records[offset : offset + limit]
     instances = [
         TargetInstance(
             id=r.id,
@@ -66,9 +77,15 @@ def list_target_instances(request: Request) -> TargetInstancesResponse:
             description=r.description,
             created_at=r.created_at,
         )
-        for r in records
+        for r in paginated
     ]
-    return TargetInstancesResponse(instances=instances, count=len(instances))
+    return TargetInstancePageResponse(
+        instances=instances,
+        count=len(instances),
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/api/target-instances/{instance_id}", response_model=TargetInstance)

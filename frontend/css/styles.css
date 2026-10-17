@@ -494,3 +494,16 @@ select {
     gap: 0;
   }
 }
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.pagination__info {
+  color: var(--text-dim);
+  font-size: 0.875rem;
+}

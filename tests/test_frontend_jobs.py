@@ -213,7 +213,7 @@ def test_list_renders_the_summary_columns_including_an_action() -> None:
 
 
 def test_list_reports_the_total_from_the_payload() -> None:
-    assert 'typeof res.data.count === "number"' in JOBS_CODE
+    assert "res.data.total" in JOBS_CODE
 
 
 def test_detail_uses_job_info_fields_only() -> None:
@@ -474,7 +474,7 @@ def test_live_list_and_detail_contract(client) -> None:
     listing = client.get("/api/jobs")
     assert listing.status_code == 200
     payload = listing.json()
-    assert set(payload.keys()) == {"jobs", "count"}
+    assert set(payload.keys()) == {"jobs", "count", "total", "limit", "offset"}
     summary = payload["jobs"][0]
     # JobSummary has exactly four fields - no association or preview
     assert set(summary.keys()) == set(JobSummary.model_fields)
@@ -599,3 +599,27 @@ def test_jobs_view_prevents_duplicate_delete_submissions() -> None:
     src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
     assert "deletingJobId" in src
     assert "if (deletingJobId)" in src
+
+
+# --------------------------------------------------------------------------- #
+# Pagination (Phase 7B)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_view_uses_total_not_count() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "res.data.total" in src
+
+
+def test_jobs_view_has_pagination_controls() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "paginationState" in src
+    assert "Previous" in src
+    assert "Next" in src
+
+
+def test_jobs_view_sends_pagination_params() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "limit" in src
+    assert "offset" in src
+    assert "URLSearchParams" in src

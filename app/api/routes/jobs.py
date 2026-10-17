@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from app.api.schemas import JobCreateRequest, JobInfo, JobListResponse, JobStatsResponse, JobSummary
+from app.api.schemas import JobCreateRequest, JobInfo, JobPageResponse, JobStatsResponse, JobSummary
 from app.core.orchestrator.jobs import create_job
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
 from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
@@ -194,12 +194,31 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
     return JobInfo(**job.as_dict())
 
 
-@router.get("", response_model=JobListResponse)
-def list_jobs(request: Request) -> JobListResponse:
-    """List stored jobs, newest-first, bounded by capacity."""
+@router.get("", response_model=JobPageResponse)
+def list_jobs(
+    request: Request,
+    status: str | None = None,
+    target: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> JobPageResponse:
+    """List stored jobs, newest-first, with optional filtering and pagination."""
+
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be non-negative")
 
     store = _resolve_job_store(request)
     jobs: list[AuditJob] = list(store.list())
+
+    if status is not None:
+        jobs = [j for j in jobs if j.status.value == status]
+    if target is not None:
+        jobs = [j for j in jobs if j.target == target]
+
+    total = len(jobs)
+    paginated = jobs[offset : offset + limit]
     summaries = [
         JobSummary(
             job_id=j.job_id,
@@ -207,9 +226,15 @@ def list_jobs(request: Request) -> JobListResponse:
             created_at=j.created_at,
             target=j.target,
         )
-        for j in jobs
+        for j in paginated
     ]
-    return JobListResponse(jobs=summaries, count=len(summaries))
+    return JobPageResponse(
+        jobs=summaries,
+        count=len(summaries),
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/stats", response_model=JobStatsResponse)

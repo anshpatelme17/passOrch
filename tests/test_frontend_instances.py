@@ -483,7 +483,7 @@ def test_server_list_matches_the_response_schema(client) -> None:
     res = client.get("/api/target-instances")
     assert res.status_code == 200
     payload = res.json()
-    assert set(payload.keys()) == {"instances", "count"}
+    assert set(payload.keys()) == {"instances", "count", "total", "limit", "offset"}
     assert payload["count"] == len(payload["instances"])
 
 
@@ -498,3 +498,27 @@ def test_previous_views_are_unchanged_by_this_phase() -> None:
 def test_legacy_dashboard_is_not_imported_by_instances() -> None:
     for spec in ('"./dashboard.js"', '"../dashboard.js"'):
         assert spec not in INSTANCES_RAW
+
+
+# --------------------------------------------------------------------------- #
+# Pagination (Phase 7B)
+# --------------------------------------------------------------------------- #
+
+
+def test_instances_view_uses_total_not_count() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert "res.data.total" in src
+
+
+def test_instances_view_has_pagination_controls() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert "paginationState" in src
+    assert "Previous" in src
+    assert "Next" in src
+
+
+def test_instances_view_sends_pagination_params() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert "limit" in src
+    assert "offset" in src
+    assert "URLSearchParams" in src

@@ -17,6 +17,7 @@ __all__ = [
     "JobInfo",
     "JobCreateRequest",
     "JobListResponse",
+    "JobPageResponse",
     "JobSummary",
     "PlanInfo",
     "PlanPreviewRequest",
@@ -29,6 +30,7 @@ __all__ = [
     "TargetInstance",
     "TargetInstanceCreateRequest",
     "TargetInstancesResponse",
+    "TargetInstancePageResponse",
 ]
 
 
@@ -208,6 +210,14 @@ class JobListResponse(_Strict):
     count: int = 0
 
 
+class JobPageResponse(_Strict):
+    jobs: list[JobSummary] = []
+    count: int = 0
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+
+
 class JobStatsResponse(_Strict):
     """Read-only aggregation over the job store."""
 
@@ -236,3 +246,11 @@ class TargetInstanceCreateRequest(_Strict):
 class TargetInstancesResponse(_Strict):
     instances: list[TargetInstance] = []
     count: int = 0
+
+
+class TargetInstancePageResponse(_Strict):
+    instances: list[TargetInstance] = []
+    count: int = 0
+    total: int = 0
+    limit: int = 50
+    offset: int = 0

@@ -59,6 +59,7 @@ let formState = { name: "", target_type: "", description: "" };
 let listSlot = null;
 let formSlot = null;
 let feedbackSlot = null;
+let paginationState = { limit: 50, offset: 0, total: 0 };
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -127,7 +128,11 @@ async function renderList() {
     return;
   }
   render(listSlot, pending("Loading target instances..."));
-  const res = await api.get("/api/target-instances");
+  const params = new URLSearchParams();
+  params.set("limit", String(paginationState.limit));
+  params.set("offset", String(paginationState.offset));
+  const qs = params.toString();
+  const res = await api.get(qs ? "/api/target-instances?" + qs : "/api/target-instances");
   if (!res.ok) {
     render(listSlot, [InlineError(res.error), RetryButton(renderList)]);
     return;
@@ -135,9 +140,10 @@ async function renderList() {
   const instances = asArray(res.data && res.data.instances).filter(
     (i) => i !== null && typeof i === "object" && isNonEmptyString(i.id)
   );
-  const total = res.data && typeof res.data.count === "number" ? res.data.count : instances.length;
+  const total = res.data && typeof res.data.total === "number" ? res.data.total : instances.length;
+  paginationState.total = total;
 
-  if (instances.length === 0) {
+  if (instances.length === 0 && paginationState.offset === 0) {
     render(listSlot, [
       empty(
         "No target instances yet",
@@ -146,6 +152,33 @@ async function renderList() {
     ]);
     return;
   }
+  if (instances.length === 0) {
+    paginationState.offset = 0;
+    renderList();
+    return;
+  }
+
+  const currentPage = Math.floor(paginationState.offset / paginationState.limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / paginationState.limit));
+
+  const paginationControls = h("div", {
+    class: "pagination",
+    children: [
+      button("Previous", () => {
+        if (paginationState.offset > 0) {
+          paginationState.offset = Math.max(0, paginationState.offset - paginationState.limit);
+          renderList();
+        }
+      }, "btn"),
+      h("span", { class: "pagination__info", text: `Page ${currentPage} of ${totalPages} (${total} total)` }),
+      button("Next", () => {
+        if (paginationState.offset + paginationState.limit < total) {
+          paginationState.offset = paginationState.offset + paginationState.limit;
+          renderList();
+        }
+      }, "btn"),
+    ],
+  });
 
   render(listSlot, [
     table(
@@ -160,6 +193,7 @@ async function renderList() {
       ])
     ),
     h("p", { class: "panel__hint", text: `${total} target instance(s) defined.` }),
+    paginationControls,
   ]);
 }
 
