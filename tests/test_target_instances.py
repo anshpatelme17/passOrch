@@ -1117,7 +1117,9 @@ def test_api_patch_unknown_and_malformed_ids_answer_the_same_404():
     for identifier in ("00000000-0000-4000-8000-000000000000", "not-a-uuid"):
         response = client.patch(f"/api/target-instances/{identifier}", json={"name": "x"})
         assert response.status_code == 404
-        assert response.json()["detail"] == "target_instance_not_found"
+        detail = response.json()["detail"]
+        assert detail["error"] == "target_instance_not_found"
+        assert detail["detail"] == "target instance does not exist"
 
 
 def test_api_patch_empty_and_invalid_payloads_answer_422():

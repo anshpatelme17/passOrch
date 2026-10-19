@@ -65,6 +65,7 @@ and are served from the in-memory stores.
 | --- | --- | --- |
 | API shell | `app/api/app.py` | Factory, guards middleware, health, SPA mount |
 | API guards | `app/api/auth.py`, `app/api/rate_limit.py` | Bearer check, limits, structured details |
+| API errors | `app/api/errors.py` | One structured error envelope (`{"error": code, "detail": message}`) for every manually raised HTTP error |
 | Routes | `app/api/routes/{jobs,targets,engines,target_instances}.py` | HTTP contracts |
 | Schemas | `app/api/schemas.py` | Strict request/response models |
 | Orchestration | `app/core/orchestrator/*` | Job/instance/plan assembly |

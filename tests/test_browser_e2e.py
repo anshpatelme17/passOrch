@@ -196,7 +196,9 @@ def test_instance_create_filter_and_empty_filter_state(page: Page) -> None:
         expect(page.get_by_text("No target instances match your filters")).to_be_visible()
 
         page.get_by_role("button", name="Clear").click()
-        expect(page.get_by_text("Browser Probe")).to_be_visible()
+        # Scope to the table cell: the create-success toast also contains the
+        # instance name and would make a bare get_by_text ambiguous.
+        expect(page.get_by_role("cell", name="Browser Probe")).to_be_visible()
 
 
 def test_instance_edit_renames_through_the_dedicated_form(page: Page) -> None:

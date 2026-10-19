@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from app.api.errors import instance_not_found, invalid_request
 from app.api.routes.jobs import persistence_unavailable_detail
 from app.api.schemas import (
     TargetInstance,
@@ -71,9 +72,9 @@ def create_target_instance_endpoint(
             store=store,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise invalid_request(str(exc)) from exc
     except (InvalidTargetInstanceError, DuplicateTargetInstanceError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise invalid_request(str(exc)) from exc
     except PersistenceError as exc:
         raise HTTPException(
             status_code=503,
@@ -99,9 +100,9 @@ def list_target_instances(
     """
 
     if limit < 1 or limit > 100:
-        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+        raise invalid_request("limit must be between 1 and 100")
     if offset < 0:
-        raise HTTPException(status_code=422, detail="offset must be non-negative")
+        raise invalid_request("offset must be non-negative")
 
     store = _get_store(request)
     records = list(store.list())
@@ -136,7 +137,7 @@ def get_target_instance(instance_id: str, request: Request) -> TargetInstance:
     store = _get_store(request)
     record = store.get(instance_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="target_instance_not_found")
+        raise instance_not_found()
     return _to_response(record)
 
 
@@ -165,16 +166,16 @@ def update_target_instance_endpoint(
             store=store,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise invalid_request(str(exc)) from exc
     except InvalidTargetInstanceError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise invalid_request(str(exc)) from exc
     except PersistenceError as exc:
         raise HTTPException(
             status_code=503,
             detail=persistence_unavailable_detail("target instance"),
         ) from exc
     if record is None:
-        raise HTTPException(status_code=404, detail="target_instance_not_found")
+        raise instance_not_found()
     return _to_response(record)
 
 
@@ -189,5 +190,5 @@ def delete_target_instance(instance_id: str, request: Request) -> Response:
             detail=persistence_unavailable_detail("target instance"),
         ) from exc
     if not deleted:
-        raise HTTPException(status_code=404, detail="target_instance_not_found")
+        raise instance_not_found()
     return Response(status_code=204)

@@ -488,7 +488,9 @@ def test_live_list_and_detail_contract(client) -> None:
 def test_live_unknown_job_is_404(client) -> None:
     res = client.get("/api/jobs/does-not-exist")
     assert res.status_code == 404
-    assert res.json() == {"detail": "job_not_found"}
+    assert res.json() == {
+        "detail": {"error": "job_not_found", "detail": "job does not exist"}
+    }
 
 
 def test_live_instance_cannot_be_stored_via_a_list_row(client) -> None:

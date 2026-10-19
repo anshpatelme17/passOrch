@@ -13,9 +13,11 @@ this module so their database behaviour cannot drift:
   error;
 * schema versioning (Phase 8C) - this module owns the file's tables and
   stamps ``PRAGMA user_version``; :meth:`PersistenceDatabase.open` runs
+  a fail-closed ``PRAGMA quick_check`` integrity scan and then the
   pending migrations transactionally **at store construction only**, so
-  an older file upgrades without data loss while a file written by a
-  newer schema is rejected fail-closed;
+  an older file upgrades without data loss, a corrupt file is rejected
+  before any table is touched, and a file written by a newer schema is
+  rejected fail-closed;
 * :func:`backup_database` - an online-safe copy via the stdlib
   ``sqlite3`` backup API (also the restore direction);
 * :func:`configured_database_path` - shared path resolution (an explicit
@@ -268,18 +270,27 @@ class PersistenceDatabase:
             connection.close()
 
     def open(self, failure: str) -> None:
-        """Create the schema and run every pending migration.
+        """Create the schema, integrity-check the file, run every migration.
 
         Called only from a store constructor, never from a read path.
-        Each migration (``PRAGMA`` read, DDL statements, version stamp)
-        commits as one transaction, so a failure rolls back to the
-        previous version with the file intact; a file stamped by a
-        *newer* schema than this code understands is rejected fail-closed
-        instead of being opened optimistically.
+        The file is first checked with ``PRAGMA quick_check``: a corrupt
+        database (including one whose header is intact enough to answer
+        ``user_version``) fails closed with the generic ``failure`` message
+        before any table is touched.  Each migration (``PRAGMA`` read, DDL
+        statements, version stamp) commits as one transaction, so a failure
+        rolls back to the previous version with the file intact; a file
+        stamped by a *newer* schema than this code understands is rejected
+        fail-closed instead of being opened optimistically.
         """
 
         connection = self._connect(failure)
         try:
+            try:
+                rows = connection.execute("PRAGMA quick_check").fetchall()
+            except sqlite3.Error as exc:
+                raise self._error_type(failure) from exc
+            if not rows or any(row[0] != "ok" for row in rows):
+                raise self._error_type(failure)
             try:
                 version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             except sqlite3.Error as exc:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from app.api.errors import invalid_request, job_not_found
 from app.api.schemas import JobCreateRequest, JobInfo, JobPageResponse, JobStatsResponse, JobSummary
 from app.core.orchestrator.jobs import create_job
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
@@ -259,14 +260,11 @@ def list_jobs(
     """
 
     if limit < 1 or limit > 100:
-        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+        raise invalid_request("limit must be between 1 and 100")
     if offset < 0:
-        raise HTTPException(status_code=422, detail="offset must be non-negative")
+        raise invalid_request("offset must be non-negative")
     if sort not in JOB_SORT_MODES:
-        raise HTTPException(
-            status_code=422,
-            detail="sort must be one of: " + ", ".join(JOB_SORT_MODES),
-        )
+        raise invalid_request("sort must be one of: " + ", ".join(JOB_SORT_MODES))
 
     store = _resolve_job_store(request)
     jobs: list[AuditJob] = list(store.list())
@@ -341,7 +339,7 @@ def detail(job_id: str, request: Request) -> JobInfo:
     store = _resolve_job_store(request)
     job = store.get(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="job_not_found")
+        raise job_not_found()
     return JobInfo.model_validate(job.as_dict())
 
 
@@ -363,5 +361,5 @@ def delete_job(job_id: str, request: Request) -> Response:
             detail=persistence_unavailable_detail(),
         ) from exc
     if not deleted:
-        raise HTTPException(status_code=404, detail="job_not_found")
+        raise job_not_found()
     return Response(status_code=204)

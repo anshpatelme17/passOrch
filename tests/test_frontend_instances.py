@@ -559,7 +559,12 @@ def test_server_delete_returns_204_with_no_body(client) -> None:
 def test_server_delete_unknown_is_404(client) -> None:
     res = client.delete("/api/target-instances/does-not-exist")
     assert res.status_code == 404
-    assert res.json() == {"detail": "target_instance_not_found"}
+    assert res.json() == {
+        "detail": {
+            "error": "target_instance_not_found",
+            "detail": "target instance does not exist",
+        }
+    }
 
 
 def test_server_list_matches_the_response_schema(client) -> None:

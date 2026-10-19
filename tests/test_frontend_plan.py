@@ -407,7 +407,12 @@ def test_live_non_simulation_mode_is_denied_not_executed(client) -> None:
 def test_live_unmapped_target_is_404(client) -> None:
     res = client.post("/api/targets/nope/compatibility/plan", json={})
     assert res.status_code == 404
-    assert res.json() == {"detail": "target_not_mapped"}
+    assert res.json() == {
+        "detail": {
+            "error": "target_not_mapped",
+            "detail": "target is not mapped to an enabled format policy",
+        }
+    }
 
 
 def test_live_extra_request_field_is_422(client) -> None:

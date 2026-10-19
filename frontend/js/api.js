@@ -5,7 +5,8 @@
  *   - issue GET / POST / DELETE with JSON bodies;
  *   - separate HTTP errors from transport errors;
  *   - tolerate 204 (no body) and empty or malformed JSON;
- *   - normalise the two distinct error payload shapes the backend produces;
+ *   - normalise the two distinct error payload shapes the backend produces
+ *     (structured object detail, or a Pydantic validation-error array);
  *   - never throw on an HTTP error status (callers inspect `res.error`).
  *
  * SECURITY BOUNDARY
@@ -16,11 +17,25 @@
 
 export const API_PREFIXES = Object.freeze(["/api/", "/health"]);
 
-/** Error codes the backend can return with a structured object detail. */
+/**
+ * Stable machine codes the backend returns in the structured object detail
+ * ({"detail": {"error": code, "detail": message, ...}}).
+ */
 export const API_ERRORS = Object.freeze({
   unknownTarget: "unknown_target",
   instanceNotFound: "target_instance_not_found",
   instanceTypeMismatch: "target_instance_type_mismatch",
+  invalidRequest: "invalid_request",
+  jobNotFound: "job_not_found",
+  targetNotMapped: "target_not_mapped",
+  unknownEngine: "unknown_engine",
+  engineNotRegistered: "engine_not_registered",
+  unauthorized: "unauthorized",
+  rateLimited: "rate_limited",
+  payloadTooLarge: "payload_too_large",
+  unsupportedTransferEncoding: "unsupported_transfer_encoding",
+  persistenceUnavailable: "persistence_unavailable",
+  notReady: "not_ready",
 });
 
 /**

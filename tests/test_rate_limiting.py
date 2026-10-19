@@ -273,6 +273,56 @@ def test_malformed_forwarding_data_fails_closed_to_the_peer() -> None:
         assert _job(client, headers={"X-Forwarded-For": header}).status_code == 429
 
 
+def test_resolve_client_address_fails_closed_on_exotic_malformed_headers() -> None:
+    """Unit-level fuzz of the walk: every malformed shape keys the peer."""
+
+    trust = frozenset({_PROXY_TRUSTED})
+    for header in (
+        "",  # empty header counts as present-but-blank
+        "   ",
+        f"  {_CLIENT_A}  ,  {_CLIENT_B}",  # padded hops are fine after strip
+        "1.2.3.4:8080",  # port suffix is not a bare IP
+        f"{_CLIENT_A}:443",
+        "[2001:db8::1]",  # brackets are not accepted
+        "999.999.999.999",
+        "0x7f.0.0.1",  # hex octets are not canonical IPs
+        "127.0.0.1, " * 40 + "9.9.9.9",  # very long but parseable chain
+        "for=1.2.3.4",  # RFC 7239 style is unsupported
+        _PROXY_TRUSTED,  # a trusted hop alone yields the peer
+    ):
+        key = resolve_client_address(_PROXY_TRUSTED, header, trust)
+        # Everything except the two parseable cases fails closed to the peer;
+        # the long parseable chain still ends at the untrusted 9.9.9.9.
+        if header == f"  {_CLIENT_A}  ,  {_CLIENT_B}":
+            assert key == _CLIENT_B
+        elif header == "127.0.0.1, " * 40 + "9.9.9.9":
+            assert key == "9.9.9.9"
+        else:
+            assert key == _PROXY_TRUSTED, header
+
+
+def test_resolve_client_address_accepts_parseable_ipv6_and_scoped_hops() -> None:
+    """Valid IPv6 hops (including zone ids, which ipaddress accepts) become
+    the key when untrusted; a trusted-only chain still fails closed."""
+
+    trust = frozenset({_PROXY_TRUSTED})
+    assert resolve_client_address(_PROXY_TRUSTED, "2001:db8::1", trust) == "2001:db8::1"
+    assert (
+        resolve_client_address(_PROXY_TRUSTED, "2001:db8::1%eth0", trust)
+        == "2001:db8::1%eth0"
+    )
+    assert resolve_client_address(_PROXY_TRUSTED, "::1", trust) == "::1"
+
+
+def test_resolve_client_address_never_invents_a_key_for_non_trusted_peer() -> None:
+    trust = frozenset({_PROXY_TRUSTED})
+    for header in (None, f"{_CLIENT_A}, {_CLIENT_B}", "garbage"):
+        assert (
+            resolve_client_address("198.51.100.99", header, trust)
+            == "198.51.100.99"
+        )
+
+
 def test_entirely_trusted_chain_fails_closed_to_the_peer() -> None:
     client = TestClient(
         _fresh_app(

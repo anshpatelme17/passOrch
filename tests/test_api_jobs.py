@@ -332,12 +332,16 @@ def test_get_job_returns_404_for_unknown_and_malformed() -> None:
     # unknown
     r = c.get("/api/jobs/00000000-0000-4000-8000-000000000000")
     assert r.status_code == 404
-    assert r.json() == {"detail": "job_not_found"}
+    assert r.json() == {
+        "detail": {"error": "job_not_found", "detail": "job does not exist"}
+    }
     assert not _forbidden_keys(r.json())
     # malformed
     r = c.get("/api/jobs/not-a-uuid")
     assert r.status_code == 404
-    assert r.json() == {"detail": "job_not_found"}
+    assert r.json() == {
+        "detail": {"error": "job_not_found", "detail": "job does not exist"}
+    }
     assert not _forbidden_keys(r.json())
 
 
@@ -701,14 +705,14 @@ def test_delete_unknown_job_returns_404() -> None:
     c = _instance_client()
     res = c.delete("/api/jobs/00000000-0000-4000-8000-000000000000")
     assert res.status_code == 404
-    assert res.json()["detail"] == "job_not_found"
+    assert res.json()["detail"]["error"] == "job_not_found"
 
 
 def test_delete_malformed_id_returns_404() -> None:
     c = _instance_client()
     res = c.delete("/api/jobs/not-a-uuid")
     assert res.status_code == 404
-    assert res.json()["detail"] == "job_not_found"
+    assert res.json()["detail"]["error"] == "job_not_found"
 
 
 def test_delete_repeated_returns_204_then_404() -> None:
@@ -721,7 +725,7 @@ def test_delete_repeated_returns_204_then_404() -> None:
 
     second = c.delete(f"/api/jobs/{jid}")
     assert second.status_code == 404
-    assert second.json()["detail"] == "job_not_found"
+    assert second.json()["detail"]["error"] == "job_not_found"
 
 
 def test_delete_leaves_other_jobs_available() -> None:
@@ -1267,7 +1271,9 @@ def test_jobs_invalid_sort_returns_422() -> None:
 
     res = c.get("/api/jobs?sort=banana")
     assert res.status_code == 422
-    assert "sort must be one of" in res.json()["detail"]
+    detail = res.json()["detail"]
+    assert detail["error"] == "invalid_request"
+    assert "sort must be one of" in detail["detail"]
 
     res = c.get("/api/jobs?sort=")
     assert res.status_code == 422

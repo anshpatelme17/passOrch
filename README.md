@@ -42,6 +42,19 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 | PATCH | `/api/target-instances/{id}` | Update the mutable fields (`name`, `description` only — `id`, `target_type`, `created_at` are immutable; attempts to send them are 422, an empty patch is 422, unknown id is 404, 503 if a configured persistent store write fails) |
 | DELETE | `/api/target-instances/{id}` | Delete instance |
 
+## Error Contract
+
+Every non-2xx response the application builds — request-guard rejections and every route `HTTPException` — uses one envelope:
+
+```json
+{"detail": {"error": "job_not_found", "detail": "job does not exist"}}
+```
+
+- **`error`** is a stable snake_case machine code a client can branch on (`unauthorized`, `rate_limited`, `payload_too_large`, `unsupported_transfer_encoding`, `persistence_unavailable`, `not_ready`, `invalid_request`, `job_not_found`, `target_instance_not_found`, `target_not_mapped`, `unknown_engine`, `engine_not_registered`, `unknown_target`, `target_instance_type_mismatch`). Some codes add structured fields (for example `supported_targets` and `target` on `unknown_target`, `retry_after` on `rate_limited`).
+- **`detail`** is a short human sentence — never an exception text, SQL fragment, file path or traceback.
+- **The single exception**: FastAPI's automatic request-body validation keeps its documented Pydantic `422` array shape (`[{"loc": [...], "msg": "...", "type": "..."}]`) so OpenAPI tooling and Pydantic-aware clients keep working. Domain and query-parameter rejections raised inside handlers are not Pydantic validation and use the envelope (`invalid_request`).
+- The SPA's `describeError` renders the object shape as `"<message> (<code>)"`.
+
 ## Frontend Views
 
 | Route | Description |

@@ -244,7 +244,9 @@ def test_engine_detail_404_for_unknown_engine(engine: str) -> None:
     response = client.get(f"/api/engines/{engine}")
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "unknown_engine"
+    detail = response.json()["detail"]
+    assert detail["error"] == "unknown_engine"
+    assert detail["detail"] == "engine is not a known engine"
 
 
 @pytest.mark.parametrize("engine", [JOHN, HASHCAT])
@@ -253,7 +255,9 @@ def test_engine_detail_404_for_known_but_unregistered_engine(engine: str) -> Non
     response = client.get(f"/api/engines/{engine}")
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "engine_not_registered"
+    detail = response.json()["detail"]
+    assert detail["error"] == "engine_not_registered"
+    assert detail["detail"] == "engine is not registered"
 
 
 @pytest.mark.parametrize(

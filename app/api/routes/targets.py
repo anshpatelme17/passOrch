@@ -11,8 +11,9 @@ structured denial information instead of a plan when the policy says no.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
+from app.api.errors import target_not_mapped
 from app.api.schemas import (
     PlanPreviewRequest,
     PlanPreviewResponse,
@@ -56,7 +57,7 @@ def plan_preview(
     """Structured, simulation-only plan preview for one mapped target."""
 
     if target_policy(target_id) is None:
-        raise HTTPException(status_code=404, detail="target_not_mapped")
+        raise target_not_mapped()
 
     state = request.app.state
     discovery_registry = getattr(state, "discovery_registry", None)

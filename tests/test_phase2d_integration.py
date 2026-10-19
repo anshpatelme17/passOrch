@@ -336,7 +336,12 @@ def test_plan_endpoint_returns_404_for_unmapped_target() -> None:
         "/api/targets/not-a-target/compatibility/plan", json={}
     )
     assert response.status_code == 404
-    assert response.json() == {"detail": "target_not_mapped"}
+    assert response.json() == {
+        "detail": {
+            "error": "target_not_mapped",
+            "detail": "target is not mapped to an enabled format policy",
+        }
+    }
 
 
 def test_plan_endpoint_rejects_unknown_body_fields() -> None:

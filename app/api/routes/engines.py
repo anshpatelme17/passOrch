@@ -19,8 +19,9 @@ code/test-invoked action through the injected service.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
+from app.api.errors import engine_not_registered, unknown_engine
 from app.api.schemas import EngineInfo, EnginesResponse
 from app.engines.discovery.models import KNOWN_ENGINES
 from app.engines.discovery.registry import (
@@ -55,12 +56,12 @@ def engine_detail(engine: str, request: Request) -> EngineInfo:
     """Capability payload for one engine (404 for unknown/unregistered)."""
 
     if engine not in KNOWN_ENGINES:
-        raise HTTPException(status_code=404, detail="unknown_engine")
+        raise unknown_engine()
 
     registry = _registry(request)
     entry = registry.get(engine)
     if entry is None:
-        raise HTTPException(status_code=404, detail="engine_not_registered")
+        raise engine_not_registered()
 
     payload = registry.entry_payload(entry)
     registry.validate_payload({"engines": [payload]})

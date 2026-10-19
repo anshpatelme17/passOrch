@@ -142,6 +142,56 @@ def test_every_credential_failure_returns_the_same_401() -> None:
     assert all(body == bodies[0] for body in bodies)
 
 
+def test_bearer_parsing_edge_cases_fail_closed() -> None:
+    """Extra malformed Authorization shapes get the same generic 401."""
+
+    client = TestClient(_fresh_app(api_token=_TOKEN))
+    adversarial = [
+        {"Authorization": "Bearer\t" + _TOKEN},  # tab separator, not space
+        {"Authorization": "bearer"},  # scheme only
+        {"Authorization": "Bearer  " + _TOKEN + " extra"},  # trailing junk
+        {"Authorization": f"Bearer {_TOKEN[:-1]}"},  # one character short
+        {"Authorization": f"Bearer {_TOKEN}x"},  # one character long
+        {"Authorization": f"bearer {_TOKEN.upper()}"},  # case change in value
+        {"Authorization": None},  # header absent (dict value None is dropped by client)
+    ]
+    for headers in adversarial:
+        effective = {k: v for k, v in headers.items() if v is not None}
+        response = _job(client, headers=effective)
+        assert response.status_code == 401, headers
+        assert response.json()["detail"]["error"] == "unauthorized"
+
+
+def test_unicode_and_mixed_length_tokens_fail_closed_without_crashing() -> None:
+    """compare_digest handles unequal lengths and near-misses safely.
+
+    HTTP header values are ASCII on the wire (httpx rejects non-ASCII), so a
+    non-ASCII configured token is unsendable as a credential - asserted here
+    with an ASCII expected token plus unequal-length and single-character-off
+    providers, which is the realistic adversarial surface.
+    """
+
+    long_token = "supercalifragilistic-token-42"
+    client = TestClient(_fresh_app(api_token=long_token))
+
+    for provided in (
+        long_token + "x",  # one character long
+        long_token[:-1],  # one character short
+        long_token.upper(),  # case change
+        long_token.replace("-", "_"),  # punctuation change
+        "ascii-only",
+        "",
+    ):
+        response = _job(client, headers={"Authorization": f"Bearer {provided}"})
+        assert response.status_code == 401
+        assert long_token not in response.text
+
+    assert (
+        _job(client, headers={"Authorization": f"Bearer {long_token}"}).status_code
+        == 200
+    )
+
+
 def test_correct_token_authorizes_mutations() -> None:
     client = TestClient(_fresh_app(api_token=_TOKEN))
 
@@ -156,6 +206,49 @@ def test_correct_token_authorizes_mutations() -> None:
         headers=_auth(),
     )
     assert created.status_code == 201
+
+
+def test_patch_and_delete_instance_mutations_respect_bearer_auth() -> None:
+    """PATCH/DELETE on the instance routes require the token like POST/DELETE jobs."""
+
+    client = TestClient(_fresh_app(api_token=_TOKEN))
+    created = client.post(
+        "/api/target-instances",
+        json={"name": "authy", "target_type": "pdf-document"},
+        headers=_auth(),
+    )
+    assert created.status_code == 201
+    instance_id = created.json()["id"]
+    url = f"/api/target-instances/{instance_id}"
+
+    assert client.patch(url, json={"name": "renamed"}).status_code == 401
+    assert client.patch(url, json={"name": "renamed"}, headers=_auth()).status_code == 200
+    assert client.get(url).json()["name"] == "renamed"
+
+    assert client.delete(url).status_code == 401
+    assert client.get(url).status_code == 200
+    assert client.delete(url, headers=_auth()).status_code == 204
+    assert client.get(url).status_code == 404
+
+
+def test_valid_token_does_not_bypass_patch_immutability() -> None:
+    """Authentication never relaxes schema validation on PATCH."""
+
+    client = TestClient(_fresh_app(api_token=_TOKEN))
+    created = client.post(
+        "/api/target-instances",
+        json={"name": "authy", "target_type": "pdf-document"},
+        headers=_auth(),
+    )
+    instance_id = created.json()["id"]
+
+    response = client.patch(
+        f"/api/target-instances/{instance_id}",
+        json={"name": "x", "target_type": "zip-archive"},
+        headers=_auth(),
+    )
+    assert response.status_code == 422
+    assert client.get(f"/api/target-instances/{instance_id}").json() == created.json()
 
 
 def test_reads_stay_unauthenticated_when_auth_enabled() -> None:

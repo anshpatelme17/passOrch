@@ -583,7 +583,8 @@ async function renderDetail(jobId) {
   render(detailSlot, [pending("Loading job details...")]);
   const res = await api.get(`/api/jobs/${jobId}`);
   if (!res.ok) {
-    // 404 job_not_found arrives as a plain-string detail; both shapes normalise.
+    // 404 job_not_found arrives as the shared object detail; describeError
+    // renders it as "<message> (<code>)".
     render(detailSlot, [
       InlineError(res.error),
       RetryButton(() => renderDetail(jobId)),
