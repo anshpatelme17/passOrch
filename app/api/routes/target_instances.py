@@ -1,11 +1,15 @@
-"""Phase 3C/7B/7D/8B - individual target instance API endpoints.
+"""Phase 3C/7B/7D/8B/4 - individual target instance API endpoints.
 
-Mutations (``POST`` / ``DELETE``) answer ``HTTP 503`` with the shared
-structured ``persistence_unavailable`` detail when a configured
+Mutations (``POST`` / ``PATCH`` / ``DELETE``) answer ``HTTP 503`` with the
+shared structured ``persistence_unavailable`` detail when a configured
 persistent store fails the write (Phase 8B); reads are served from the
 in-memory store and never touch the database.  All other contracts -
 validation, ordering, filtering, pagination and 404 identifiers - are
-unchanged from Phase 7D.
+unchanged from Phase 7D.  Phase 4 adds ``PATCH``: only ``name`` and
+``description`` are mutable (``id``, ``target_type`` and ``created_at``
+are immutable, enforced by ``extra="forbid"``), a record keeps its
+insertion position, and unknown or malformed identifiers answer the same
+generic 404 as ``GET``/``DELETE``.
 """
 
 from __future__ import annotations
@@ -17,12 +21,17 @@ from app.api.schemas import (
     TargetInstance,
     TargetInstanceCreateRequest,
     TargetInstancePageResponse,
+    TargetInstanceUpdateRequest,
 )
-from app.core.orchestrator.target_instances import create_target_instance
+from app.core.orchestrator.target_instances import (
+    create_target_instance,
+    update_target_instance,
+)
 from app.engines.persistence import PersistenceError
 from app.engines.target_instances import (
     DuplicateTargetInstanceError,
     InvalidTargetInstanceError,
+    TargetInstanceRecord,
     TargetInstanceStore,
     default_target_instance_store,
 )
@@ -37,6 +46,16 @@ def _get_store(request: Request) -> TargetInstanceStore:
     if store is not None:
         return store
     return default_target_instance_store()
+
+
+def _to_response(record: TargetInstanceRecord) -> TargetInstance:
+    return TargetInstance(
+        id=record.id,
+        name=record.name,
+        target_type=record.target_type,
+        description=record.description,
+        created_at=record.created_at,
+    )
 
 
 @router.post("/api/target-instances", response_model=TargetInstance, status_code=201)
@@ -60,13 +79,7 @@ def create_target_instance_endpoint(
             status_code=503,
             detail=persistence_unavailable_detail("target instance"),
         ) from exc
-    return TargetInstance(
-        id=record.id,
-        name=record.name,
-        target_type=record.target_type,
-        description=record.description,
-        created_at=record.created_at,
-    )
+    return _to_response(record)
 
 
 @router.get("/api/target-instances", response_model=TargetInstancePageResponse)
@@ -124,13 +137,45 @@ def get_target_instance(instance_id: str, request: Request) -> TargetInstance:
     record = store.get(instance_id)
     if record is None:
         raise HTTPException(status_code=404, detail="target_instance_not_found")
-    return TargetInstance(
-        id=record.id,
-        name=record.name,
-        target_type=record.target_type,
-        description=record.description,
-        created_at=record.created_at,
-    )
+    return _to_response(record)
+
+
+@router.patch("/api/target-instances/{instance_id}", response_model=TargetInstance)
+def update_target_instance_endpoint(
+    instance_id: str, body: TargetInstanceUpdateRequest, request: Request
+) -> TargetInstance:
+    """Update the mutable fields of one target instance.
+
+    ``name`` and ``description`` are the only mutable fields - at least
+    one must be present (empty patch is a structured 422), and ``id``,
+    ``target_type`` and ``created_at`` are immutable (``extra="forbid"``
+    turns any attempt to send them into a 422).  Unknown or malformed
+    identifiers answer the same generic 404 as ``GET``; a configured
+    persistent store that fails the mirrored write answers the shared
+    ``503 persistence_unavailable`` with the in-memory record left
+    truthful (the failed update is never half-applied).
+    """
+
+    store = _get_store(request)
+    try:
+        record = update_target_instance(
+            instance_id,
+            name=body.name,
+            description=body.description,
+            store=store,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidTargetInstanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail("target instance"),
+        ) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="target_instance_not_found")
+    return _to_response(record)
 
 
 @router.delete("/api/target-instances/{instance_id}", status_code=204, response_class=Response)

@@ -28,7 +28,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.app import FRONTEND_DIR, create_app
-from app.api.schemas import TargetInstance, TargetInstanceCreateRequest
+from app.api.schemas import (
+    TargetInstance,
+    TargetInstanceCreateRequest,
+    TargetInstanceUpdateRequest,
+)
 from app.engines.target_instances import (
     MAX_DESCRIPTION_LENGTH,
     MAX_NAME_LENGTH,
@@ -74,8 +78,8 @@ def client() -> TestClient:
 
 
 def test_view_uses_only_target_instance_and_catalog_endpoints() -> None:
-    calls = set(re.findall(r'api\.(?:get|post|delete)\(\s*"([^"]+)"', INSTANCES_RAW))
-    explicit = set(re.findall(r'api\.(?:get|post|delete)\(`([^`]+)`', INSTANCES_RAW))
+    calls = set(re.findall(r'api\.(?:get|post|patch|delete)\(\s*"([^"]+)"', INSTANCES_RAW))
+    explicit = set(re.findall(r'api\.(?:get|post|patch|delete)\(`([^`]+)`', INSTANCES_RAW))
     combined = calls | explicit
     assert combined, "the view must call the API"
     for path in combined:
@@ -87,9 +91,9 @@ def test_view_uses_only_target_instance_and_catalog_endpoints() -> None:
     assert any(p.startswith("/api/target-instances/") for p in combined), "delete uses the by-id path"
 
 
-def test_view_issues_get_post_and_delete() -> None:
-    methods = set(re.findall(r"api\.(get|post|delete)\(", INSTANCES_CODE))
-    assert {"get", "post", "delete"} <= methods, methods
+def test_view_issues_get_post_patch_and_delete() -> None:
+    methods = set(re.findall(r"api\.(get|post|patch|delete)\(", INSTANCES_CODE))
+    assert {"get", "post", "patch", "delete"} <= methods, methods
 
 
 def test_delete_path_is_built_from_the_instance_id() -> None:
@@ -297,7 +301,7 @@ def test_delete_failure_reports_error_and_does_not_refresh() -> None:
 def test_list_refreshes_after_successful_mutation_only() -> None:
     """A refresh must sit *after* the failure branch, never inside it."""
 
-    for fn in ("submitForm", "processDelete"):
+    for fn in ("submitForm", "processDelete", "processUpdate"):
         idx = INSTANCES_CODE.find("async function " + fn)
         assert idx > 0, fn
         block = INSTANCES_CODE[idx : idx + 2200]
@@ -309,6 +313,85 @@ def test_list_refreshes_after_successful_mutation_only() -> None:
             # and the failure branch itself must not call renderList
             failure_block = block[fail_at : block.find("}", block.find("}", fail_at) + 1) + 1]
             assert "renderList()" not in failure_block, f"{fn} failure branch refreshes the list"
+
+
+# --------------------------------------------------------------------------- #
+# edit affordance (Phase 4): PATCH with mutable fields only
+# --------------------------------------------------------------------------- #
+
+
+def test_update_schema_is_exactly_the_mutable_fields() -> None:
+    schema_fields = set(TargetInstanceUpdateRequest.model_fields)
+    assert schema_fields == {"name", "description"}
+
+
+def test_row_offers_edit_next_to_delete_and_never_fires_inline() -> None:
+    code = INSTANCES_CODE
+    row_edit = code.find('button("Edit"')
+    assert row_edit > 0
+    row_line = code[row_edit : code.find("\n", row_edit)]
+    assert "renderEditForm" in row_line
+    assert "api.patch" not in row_line, "the row button only renders the form"
+
+
+def test_edit_form_is_prefilled_and_explains_immutability() -> None:
+    code = INSTANCES_CODE
+    assert "renderEditForm" in code
+    assert "Only the name and description can be changed." in code
+    assert "state.name = " in code or "name: isNonEmptyString(instance.name)" in code
+    assert "instance.description" in code
+
+
+def test_edit_form_validates_the_mutable_bounds() -> None:
+    code = INSTANCES_CODE
+    assert "validateEditForm" in code
+    # The edit validation must not require a target_type (it is immutable).
+    edit_block = code.split("function validateEditForm")[1].split("}")[0]
+    assert "target_type" not in edit_block
+
+
+def test_patch_payload_sends_only_the_mutable_fields() -> None:
+    code = INSTANCES_CODE
+    payload_at = code.find("const payload = { name: state.name, description:")
+    assert payload_at > 0, code[payload_at : payload_at + 120]
+    payload_block = code[payload_at : code.find("}", payload_at)]
+    assert "target_type" not in payload_block
+    assert "created_at" not in payload_block
+    assert "id" not in payload_block
+
+
+def test_patch_path_is_built_from_the_instance_id() -> None:
+    assert "`/api/target-instances/${instance.id}`" in INSTANCES_CODE
+
+
+def test_edit_failure_keeps_the_form_for_a_retry() -> None:
+    code = INSTANCES_CODE
+    process = code.split("async function processUpdate")[1].split("async function renderInstances")[0]
+    fail_at = process.find("if (!res.ok) {")
+    assert fail_at > 0
+    refresh_at = process.find("renderList()")
+    fail_block = process[fail_at:refresh_at]
+    assert "res.error.message" in fail_block
+    assert "rerender(res.error.message)" in fail_block
+    assert "renderList()" not in fail_block
+
+
+def test_edit_success_reports_and_refreshes_once() -> None:
+    code = INSTANCES_CODE
+    process = code.split("async function processUpdate")[1].split(
+        "async function renderInstances"
+    )[0]
+    assert 'renderFeedback("success"' in process
+    assert "Updated target instance" in process
+    assert process.count("renderList()") == 1
+
+
+def test_edit_never_touches_foreign_endpoints_or_discovery() -> None:
+    block = INSTANCES_CODE.split("function renderEditForm")[1].split("async function renderInstances")[0]
+    for endpoint in FOREIGN_ENDPOINTS:
+        assert endpoint not in block, endpoint
+    for pattern in (r"\bfetch\s*\(", r"innerHTML", r"discover"):
+        assert not re.search(pattern, block), pattern
 
 
 # --------------------------------------------------------------------------- #

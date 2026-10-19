@@ -199,6 +199,30 @@ def test_instance_create_filter_and_empty_filter_state(page: Page) -> None:
         expect(page.get_by_text("Browser Probe")).to_be_visible()
 
 
+def test_instance_edit_renames_through_the_dedicated_form(page: Page) -> None:
+    with _live_server(_fresh_app()) as base:
+        page.goto(f"{base}/#/instances")
+        page.locator("#instance-name").fill("Editable Probe")
+        page.locator("#instance-type").select_option(TARGET)
+        page.get_by_role("button", name="Create target instance").click()
+        expect(page.get_by_text('Created target instance "Editable Probe".')).to_be_visible()
+
+        # The row offers Edit next to Delete; the form opens prefilled and
+        # explains that only the name and description are mutable.
+        page.get_by_role("button", name="Edit").click()
+        expect(page.get_by_text('Edit target instance "Editable Probe"')).to_be_visible()
+        expect(page.get_by_text("Only the name and description can be changed.")).to_be_visible()
+        expect(page.locator("#instance-edit-name")).to_have_value("Editable Probe")
+
+        page.locator("#instance-edit-name").fill("Editable Probe (edited)")
+        page.get_by_role("button", name="Save changes").click()
+
+        expect(page.get_by_text('Updated target instance "Editable Probe (edited)".')).to_be_visible()
+        expect(page.get_by_text("Editable Probe (edited)").first).to_be_visible()
+        # The immutable target type survived the update in the refreshed row.
+        expect(page.get_by_role("table").get_by_text(TARGET)).to_be_visible()
+
+
 def test_job_submit_records_denial_and_detail_stays_denied(page: Page) -> None:
     with _live_server(_fresh_app()) as base:
         page.goto(f"{base}/#/jobs")

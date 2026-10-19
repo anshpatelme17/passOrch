@@ -6,13 +6,40 @@
 * Node.js 20+ (only for the executed frontend JS tests)
 * Docker (only for container verification)
 
-Runtime dependencies are FastAPI, Starlette, Pydantic and uvicorn. Test/CI
-extras: `pytest`, `httpx`, `ruff`. Install with
-`pip install -c constraints.txt -e ".[test]"` — `constraints.txt` pins the
-exact dependency closure verified against this codebase (regenerate it only
-from an environment that has passed the full suite). An optional local-only
-extra is Playwright for the browser E2E suite (see below); it is deliberately
-not part of `[test]` and not installed by CI.
+Runtime dependencies are FastAPI, Starlette, Pydantic and uvicorn.
+Install with the hash-verified lock (the same flow CI and Docker use;
+it already includes the test tooling):
+
+```text
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install --no-deps -e .
+```
+
+`requirements.lock` pins every dependency with PyPI SHA-256 hashes;
+`constraints.txt` is the human-readable range-pin reference;
+`pyproject.toml` keeps the compatible ranges. An optional local-only
+extra is Playwright for the browser E2E suite (see below); it is
+deliberately not part of the lock and not installed by CI.
+
+### Regenerating the pins
+
+Only from an environment that has passed the full suite:
+
+1. Update the `==` pins in `constraints.txt` (and add/remove entries if
+   the closure changed) from `pip freeze` of that environment.
+2. Rebuild `requirements.lock`: for each pin, fetch
+   `https://pypi.org/pypi/<name>/<version>/json` and collect every
+   `urls[].digests.sha256` (sdist + all platform wheels), emitting
+   `name==version \` lines with one indented
+   `--hash=sha256:<digest> \` per artifact (backslash continuations
+   required by pip).
+3. Verify before committing:
+   `python -m pip install --require-hashes --dry-run --ignore-installed -r requirements.lock`
+   must succeed (fresh-environment simulation) and
+   `tests/test_deployment_artifacts.py` must pass.
+4. Action SHAs and the Docker base digest are pinned in `ci.yml` /
+   `Dockerfile`; refresh them the same way (GitHub API tag deref,
+   `docker buildx imagetools inspect`) when bumping versions.
 
 ## Everyday commands
 
@@ -21,6 +48,7 @@ python -m uvicorn app.api.app:app --reload          # dev server on127.0.0.1:800
 python -m pytest --tb=short                         # full backend suite
 python -m pytest tests/test_api_jobs.py -k list     # one area
 ruff check .                                        # lint (F, E9)
+python -m mypy app/api app/engines                  # typing gate (Step 5 scope)
 git diff --check                                    # no stray conflict markers/whitespace
 python -m pytest tests/test_frontend_js_execution.py  # executes frontend-tests/*.test.mjs (Node)
 npm run test:js                                      # same harness directly via node --test
@@ -36,6 +64,32 @@ Notes:
 * The JS-execution harness needs Node; discovery is automatic, or set
   `PASSORCH_NODE`. Running that file with bare `python` (instead of pytest)
   fails on `tests` imports — use pytest.
+
+## Typing (mypy)
+
+The incremental typing gate covers `app/api` and `app/engines` only; other
+packages are not checked yet and must not regress the gate by proxy.
+
+* Config lives in `pyproject.toml` `[tool.mypy]`: `check_untyped_defs` is on,
+  so every function body in scope is checked even without annotations.
+* Run `python -m mypy app/api app/engines` after touching either layer; CI
+  runs the same command immediately after Ruff. mypy itself is hash-pinned
+  in `requirements.lock` (with its full closure) and range-pinned in the
+  `[test]` extra, so CI installs it with the same `--require-hashes` flow.
+* Fix findings with real annotations or small behavior-preserving
+  restructures (narrowing `object` at the trust boundary, explicit dict
+  annotations, `model_validate` instead of `**dict` unpacking). Do not add
+  blanket `# type: ignore` comments, `Any`-heavy signatures, or new
+  per-module relaxations to make a check pass.
+* A per-module override in `[tool.mypy]` is allowed only for a protected
+  file whose contract cannot be edited; it must name the single error code,
+  sit in a commented override block, and be recorded here. The one current
+  exception: `app/engines/discovery/service.py` (protected) disables
+  `arg-type` because `_resolve_subset` deliberately accepts untrusted
+  engine names as `object` and verifies them with runtime isinstance checks
+  before use.
+* When widening the gate to a new package, extend `files`, keep the suite
+  green, and add the package to this section.
 
 ## Browser end-to-end tests (optional, local)
 
@@ -74,10 +128,12 @@ python -m pytest tests/test_browser_e2e.py --tb=short
    database (bytes/mtime are asserted in tests).
 6. **No `innerHTML`** (or `insertAdjacentHTML`/`document.write`) in frontend
    JS — `textContent` via `components.js` only.
-7. **Environment variables**: exactly the five documented names
+7. **Environment variables**: exactly the six documented names
    (`PASSORCH_JOB_DB`, `PASSORCH_RATE_LIMIT`, `PASSORCH_RATE_WINDOW_SECONDS`,
-   `PASSORCH_MAX_BODY_BYTES`, `PASSORCH_API_TOKEN`). Adding a sixth requires
-   README + `test_config_security` updates; prefer `create_app` parameters.
+   `PASSORCH_MAX_BODY_BYTES`, `PASSORCH_API_TOKEN`, `PASSORCH_TRUSTED_PROXIES`).
+   Adding another requires README + `test_config_security` +
+   `test_docs_consistency` + `test_deployment_artifacts` + `.env.example`
+   updates; prefer `create_app` parameters.
 8. **Simulation only**: never add a code path that executes an engine or
    accepts attacker-supplied executables/argv.
 
@@ -126,9 +182,11 @@ python -m pytest --tb=short
 python -m pytest tests/test_frontend_js_execution.py
 python -m pytest tests/test_browser_e2e.py --tb=short   # optional, if Playwright is installed
 ruff check .
+python -m mypy app/api app/engines
 git diff --check
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same core steps (minus the optional
-browser suite) on pushes to `main` and on pull requests, installing with
-`-c constraints.txt` for reproducible dependency resolution.
+browser suite) on pushes to `main` and on pull requests, installing from
+`requirements.lock` with `--require-hashes` so every artifact is
+digest-verified.

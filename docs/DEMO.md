@@ -44,6 +44,19 @@ curl -X POST http://127.0.0.1:8000/api/target-instances \
 {"id":"…uuid…","name":"Demo PDF","target_type":"pdf-document","description":"walkthrough","created_at":1760000000}
 ```
 
+Rename it (only `name` and `description` are mutable — `id`,
+`target_type` and `created_at` stay untouched, and sending them is a
+structured 422):
+
+```text
+curl -X PATCH http://127.0.0.1:8000/api/target-instances/…uuid… \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Demo PDF (renamed)"}'
+```
+
+The response is the full updated record with the same `id`,
+`target_type` and `created_at`.
+
 ## 4. Submit an audit job (denied is a valid, recorded result)
 
 ```text

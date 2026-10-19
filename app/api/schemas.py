@@ -250,6 +250,15 @@ class TargetInstanceCreateRequest(_Strict):
     description: str = ""
 
 
+class TargetInstanceUpdateRequest(_Strict):
+    """Mutable fields only (Phase 4): ``id``, ``target_type`` and
+    ``created_at`` are immutable - ``extra="forbid"`` rejects any attempt
+    to send them, and at least one field must be present."""
+
+    name: str | None = None
+    description: str | None = None
+
+
 class TargetInstancesResponse(_Strict):
     instances: list[TargetInstance] = []
     count: int = 0

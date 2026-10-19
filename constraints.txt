@@ -1,24 +1,32 @@
 # Dependency constraints for PassOrch.
 #
+# Human-readable range-pin reference for the verified closure. The
+# machine-enforced supply-chain artifact is requirements.lock, which
+# carries the same pins plus PyPI SHA-256 hashes and is what CI and
+# Docker install (with --require-hashes). Keep this file in sync when
+# regenerating the lock.
+#
 # Every pin below is the exact version from the verified local environment
-# (Python 3.13.5) in which this repository's full test suite, lint, frontend
-# harness, browser E2E suite and Docker build were run.  Versions here are
-# NOT guessed: they are the releases proven against this codebase.
+# (Python 3.13.5) in which this repository's full test suite, lint, typing
+# gate, frontend harness, browser E2E suite and Docker build were run.
+# Versions here are NOT guessed: they are the releases proven against this
+# codebase.
 #
 # Usage (application installs and CI - pyproject.toml keeps compatible ranges):
 #   python -m pip install -c constraints.txt -e ".[test]"
 #
-# Scope: the declared runtime and test dependency closure only.  Optional
-# local tooling (e.g. playwright for the browser E2E suite) is deliberately
-# unconstrained and uninstalled here - browser tests skip when it is absent.
-# Build backends (setuptools) resolve in pip's isolated build environment and
-# are unaffected by this file.
+# Scope: the declared runtime, test and typing-toolchain (mypy) dependency
+# closure.  Optional local tooling (e.g. playwright for the browser E2E
+# suite) is deliberately unconstrained and uninstalled here - browser tests
+# skip when it is absent.  Build backends (setuptools) resolve in pip's
+# isolated build environment and are unaffected by this file.
 #
 # Regenerate only from a fresh environment that has actually passed the suite:
 #   python -m pip freeze  (then keep the closure listed below)
 
 annotated-types==0.7.0
 anyio==4.11.0
+ast-serialize==0.13.1
 certifi==2026.7.22
 click==8.3.1
 fastapi==0.116.1
@@ -27,7 +35,11 @@ httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
 iniconfig==2.3.0
+librt==0.16.0
+mypy==2.4.0
+mypy-extensions==1.1.0
 packaging==26.2
+pathspec==1.1.1
 pluggy==1.6.0
 pydantic==2.11.7
 pydantic-core==2.33.2

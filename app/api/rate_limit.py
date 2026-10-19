@@ -13,6 +13,14 @@ route validation, the execution policy and persistence checks:
   that use ``Transfer-Encoding`` (chunked uploads) are rejected with
   ``HTTP 400`` before any body is read, so the size bound cannot be
   bypassed by omitting ``Content-Length``;
+* :func:`configured_trusted_proxies` / :func:`resolve_client_address` -
+  by default the rate-limit key is the socket peer address and
+  ``X-Forwarded-For`` is never consulted; an operator running behind a
+  reverse proxy can set an exact-IP trust anchor
+  (``PASSORCH_TRUSTED_PROXIES`` or the ``trusted_proxies`` argument) so
+  that requests arriving *from* a trusted proxy are keyed by the real
+  client hop instead.  Misconfiguration fails fast at construction, and
+  any malformed or missing forwarding data fails closed to the peer;
 * :func:`configured_limits` - explicit ``create_app`` arguments win over
   the ``PASSORCH_RATE_LIMIT`` / ``PASSORCH_RATE_WINDOW_SECONDS`` /
   ``PASSORCH_MAX_BODY_BYTES`` environment variables; a bad value is a
@@ -25,9 +33,12 @@ Documented limitations (also in README, kept honest by tests):
 
 * counters live in process memory: restarting the application clears
   them, and separate worker processes do not share them;
-* the client key is the socket peer address; ``X-Forwarded-For`` is
-  deliberately **ignored** because it is spoofable without a trusted
-  proxy in front;
+* the client key is the socket peer address by default; ``X-Forwarded-For``
+  is deliberately **ignored** unless the operator configures the exact-IP
+  trust anchor (``PASSORCH_TRUSTED_PROXIES``), because the header is
+  spoofable without a trusted proxy in front.  Even with the anchor set,
+  only requests whose socket peer is itself trusted consult the header,
+  and malformed data fails closed to the peer;
 * a body without a usable ``Content-Length`` *and* without
   ``Transfer-Encoding`` is treated as absent (empty-body mutations such
   as ``DELETE`` are allowed); a present-but-invalid ``Content-Length``
@@ -41,12 +52,14 @@ Documented limitations (also in README, kept honest by tests):
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import os
 import threading
 import time
 from collections import OrderedDict
-from typing import NamedTuple
+from collections.abc import Iterable
+from typing import Any, Callable, NamedTuple
 
 __all__ = [
     "DEFAULT_MAX_BODY_BYTES",
@@ -56,18 +69,24 @@ __all__ = [
     "MUTATING_METHODS",
     "RATE_LIMIT_EXCEEDED_ERROR",
     "PAYLOAD_TOO_LARGE_ERROR",
+    "TRUSTED_PROXIES_ENV_VAR",
     "UNSUPPORTED_TRANSFER_ENCODING_ERROR",
     "RateLimiter",
     "RateLimitConfig",
     "configured_limits",
+    "configured_trusted_proxies",
     "exceeds_body_limit",
     "payload_too_large_detail",
     "rate_limited_detail",
+    "resolve_client_address",
     "unsupported_transfer_encoding_detail",
 ]
 
 #: Methods that change state - the only requests guards apply to.
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: Opt-in reverse-proxy trust anchor (exact IPs, comma-separated).
+TRUSTED_PROXIES_ENV_VAR = "PASSORCH_TRUSTED_PROXIES"
 
 #: Stable machine-readable error codes.
 RATE_LIMIT_EXCEEDED_ERROR = "rate_limited"
@@ -82,8 +101,9 @@ DEFAULT_MAX_BODY_BYTES = 64 * 1024
 #: Bounded per-address table (LRU-evicted) - see module docstring.
 MAX_TRACKED_ADDRESSES = 1000
 
-#: Generic configuration message: names no value and no path.
+#: Generic configuration messages: name no value and no path.
 _INVALID_CONFIG = "rate limit settings must be positive numbers"
+_INVALID_TRUSTED_PROXIES = "trusted proxies must be a list of exact IP addresses"
 
 
 class RateLimitConfig(NamedTuple):
@@ -94,12 +114,12 @@ class RateLimitConfig(NamedTuple):
     max_body_bytes: int
 
 
-def _cast_positive(raw: object, caster: type) -> object:
+def _cast_positive(raw: object, caster: Callable[[Any], Any]) -> Any:
     try:
         value = caster(raw)
     except (TypeError, ValueError):
         raise ValueError(_INVALID_CONFIG) from None
-    if value <= 0:  # type: ignore[operator]
+    if value <= 0:
         raise ValueError(_INVALID_CONFIG)
     return value
 
@@ -107,9 +127,9 @@ def _cast_positive(raw: object, caster: type) -> object:
 def _resolve(
     explicit: object,
     env_name: str,
-    caster: type,
+    caster: Callable[[Any], Any],
     default: object,
-) -> object:
+) -> Any:
     """An explicit ``create_app`` argument, else the environment, else default."""
 
     if explicit is not None:
@@ -128,10 +148,10 @@ def configured_limits(
     """Resolve all three guard settings, failing fast on invalid input."""
 
     return RateLimitConfig(
-        limit=int(  # type: ignore[call-overload]
+        limit=int(
             _resolve(rate_limit, "PASSORCH_RATE_LIMIT", int, DEFAULT_RATE_LIMIT)
         ),
-        window_seconds=float(  # type: ignore[call-overload]
+        window_seconds=float(
             _resolve(
                 rate_window_seconds,
                 "PASSORCH_RATE_WINDOW_SECONDS",
@@ -139,10 +159,91 @@ def configured_limits(
                 DEFAULT_RATE_WINDOW_SECONDS,
             )
         ),
-        max_body_bytes=int(  # type: ignore[call-overload]
+        max_body_bytes=int(
             _resolve(max_body_bytes, "PASSORCH_MAX_BODY_BYTES", int, DEFAULT_MAX_BODY_BYTES)
         ),
     )
+
+
+def configured_trusted_proxies(
+    explicit: str | Iterable[str] | None = None,
+) -> frozenset[str]:
+    """Resolve the opt-in reverse-proxy trust anchor (exact IPs only).
+
+    An explicit ``create_app`` argument (a comma-separated string or an
+    iterable of addresses) wins over the ``PASSORCH_TRUSTED_PROXIES``
+    environment variable (comma-separated).  Unset or blank means "no
+    trusted proxies" - the default - and ``X-Forwarded-For`` is never
+    consulted.  Every entry must be a valid exact IP address (IPv4 or
+    IPv6, canonicalised); hostnames, CIDR ranges, blank entries inside a
+    non-empty list, and any other value fail fast with a generic
+    ``ValueError`` that never echoes the raw input.
+    """
+
+    if explicit is None:
+        raw = os.environ.get(TRUSTED_PROXIES_ENV_VAR, "")
+        if not raw.strip():
+            return frozenset()
+        entries = raw.split(",")
+    elif isinstance(explicit, str):
+        if not explicit.strip():
+            return frozenset()
+        entries = explicit.split(",")
+    else:
+        entries = list(explicit)
+
+    resolved: set[str] = set()
+    for entry in entries:
+        candidate = entry.strip() if isinstance(entry, str) else ""
+        if not candidate:
+            raise ValueError(_INVALID_TRUSTED_PROXIES) from None
+        try:
+            resolved.add(str(ipaddress.ip_address(candidate)))
+        except ValueError:
+            raise ValueError(_INVALID_TRUSTED_PROXIES) from None
+    return frozenset(resolved)
+
+
+def resolve_client_address(
+    peer: str,
+    x_forwarded_for: str | None,
+    trusted_proxies: frozenset[str],
+) -> str:
+    """The rate-limit key for a request: the real client, or the peer.
+
+    Default (``trusted_proxies`` empty): the socket peer address, always -
+    ``x_forwarded_for`` is never consulted, so a spoofed header cannot
+    move a client between buckets.
+
+    With a trust anchor configured: only when the socket peer is itself
+    a trusted proxy is the ``X-Forwarded-For`` chain walked right-to-left
+    past trusted hops; the first untrusted hop becomes the key.  Any
+    malformed hop, a missing header, or a chain that is entirely trusted
+    fails closed to the peer address (the proxy's own bucket) - a client
+    identity is never invented.
+    """
+
+    if not trusted_proxies:
+        return peer
+    try:
+        peer_ip = str(ipaddress.ip_address(peer.strip()))
+    except ValueError:
+        return peer
+    if peer_ip not in trusted_proxies:
+        return peer
+    if x_forwarded_for is None:
+        return peer
+    hops = [hop.strip() for hop in x_forwarded_for.split(",")]
+    if not all(hops):
+        return peer
+    for hop in reversed(hops):
+        try:
+            hop_ip = str(ipaddress.ip_address(hop))
+        except ValueError:
+            return peer
+        if hop_ip not in trusted_proxies:
+            return hop_ip
+    return peer
 
 
 def exceeds_body_limit(content_length: str | None, limit: int) -> bool:

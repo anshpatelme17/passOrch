@@ -81,8 +81,9 @@ The adapter/selection/policy/discovery-core files listed above are
 
 * One uvicorn process (single worker) by default; stores are thread-safe
   (`RLock`) for handler concurrency.
-* Rate-limit counters live in process memory (per peer address; never
-  `X-Forwarded-For`).
+* Rate-limit counters live in process memory (per peer address by
+  default; `X-Forwarded-For` only behind the opt-in exact-IP trust
+  anchor — see README "Trusted proxies").
 * SQLite access opens a short-lived connection per operation and closes it in
   `finally`; default rollback-journal mode, no WAL sidecars.
 * Persistent stores hydrate once at construction (startup failures are

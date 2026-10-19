@@ -9,8 +9,11 @@ scans that a new module could silently violate:
   ``os.popen``, ``pty`` and ``multiprocessing`` are banned everywhere;
 * no dynamic code execution (``eval`` / ``exec`` / ``compile`` /
   ``__import__``) anywhere in ``app/``;
-* ``X-Forwarded-For`` (and forwarded headers generally) are never read -
-  rate limiting stays keyed on the socket peer;
+* ``X-Forwarded-For`` is read in exactly one place - the middleware's
+  client-key resolution in ``app/api/app.py`` behind the Phase 12B
+  opt-in trust anchor; every other module under ``app/`` is free of
+  forwarded-header reads, and the pure resolver in ``rate_limit.py``
+  never touches a request;
 * the configured bearer token never lands on ``application.state`` (only
   the ``auth_enabled`` boolean does), and the bearer comparison in
   ``app/api/auth.py`` is the constant-time ``secrets.compare_digest``;
@@ -28,6 +31,7 @@ from app.api.app import create_app
 _APP_MODULES = sorted(Path("app").rglob("*.py"))
 _RUNNER = Path("app/engines/discovery/runner.py")
 _AUTH_MODULE = Path("app/api/auth.py")
+_APP_FACTORY_MODULE = Path("app/api/app.py")
 _TOKEN = "regression-probe-token-value"
 _DYNAMIC_CALLS = {"eval", "exec", "compile", "__import__"}
 _PROCESS_MODULES = {"pty", "multiprocessing"}
@@ -112,7 +116,15 @@ def test_no_dynamic_code_execution_anywhere_in_the_app() -> None:
             )
 
 
-def test_forwarded_headers_are_never_read() -> None:
+def test_forwarded_headers_are_read_only_for_trusted_proxy_keying() -> None:
+    """Phase 12B: the socket peer stays the default key.  ``X-Forwarded-For``
+    may be read in exactly one place - the client-key resolution call in
+    the ``app/api/app.py`` middleware - and only when an operator pinned
+    the exact-IP trust anchor.  A second read anywhere else (or any read
+    in the pure resolver, auth, or a route) fails this scan, so no new
+    module can silently start trusting forwarded headers."""
+
+    reads: list[Path] = []
     for module, tree in _trees():
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _call_name(node) in {"get", "getitem"}:
@@ -120,13 +132,17 @@ def test_forwarded_headers_are_never_read() -> None:
                 if arguments and isinstance(arguments[0], ast.Constant):
                     value = arguments[0].value
                     if isinstance(value, str) and "forwarded" in value.lower():
-                        raise AssertionError(f"forwarded header read in {module}")
+                        reads.append(module)
             if isinstance(node, ast.Subscript):
                 slice_node = node.slice
                 if isinstance(slice_node, ast.Constant) and isinstance(
                     slice_node.value, str
                 ):
                     assert "forwarded" not in slice_node.value.lower(), module
+
+    assert reads == [_APP_FACTORY_MODULE], sorted({str(path) for path in reads})
+    factory_text = _APP_FACTORY_MODULE.read_text(encoding="utf-8")
+    assert factory_text.count('"x-forwarded-for"') == 1
 
 
 def test_bearer_token_never_lands_on_application_state() -> None:

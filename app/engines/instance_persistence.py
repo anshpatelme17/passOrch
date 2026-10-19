@@ -10,8 +10,8 @@ job store so one database file always carries one consistent view:
   alike); it subclasses the shared :class:`~app.engines.persistence.PersistenceError`;
 * :class:`PersistentTargetInstanceStore` - a ``TargetInstanceStore``
   subclass: the bounded, lock-guarded in-memory container stays
-  authoritative for every read while ``put`` / ``delete`` / ``reset`` are
-  mirrored to the database file;
+  authoritative for every read while ``put`` / ``update`` / ``delete`` /
+  ``reset`` are mirrored to the database file;
 * :func:`configured_instance_store` - shared path resolution (an explicit
   ``create_app(job_db_path=...)`` first, then ``PASSORCH_JOB_DB``).
 
@@ -74,6 +74,7 @@ __all__ = [
 _INIT_FAILED = "failed to initialize instance database"
 _READ_FAILED = "failed to read persisted instances"
 _WRITE_FAILED = "failed to write an instance record"
+_UPDATE_FAILED = "failed to update an instance record"
 _DELETE_FAILED = "failed to delete an instance record"
 _CLEAR_FAILED = "failed to clear persisted instances"
 _INVALID_RECORD = "persisted instance record is invalid"
@@ -82,6 +83,7 @@ _INSERT_INSTANCE_SQL = "INSERT INTO passorch_instances (instance_id, payload) VA
 _SELECT_INSTANCES_SQL = "SELECT seq, payload FROM passorch_instances ORDER BY seq ASC"
 _PRUNE_INSTANCES_SQL = "DELETE FROM passorch_instances WHERE seq < ?"
 _DELETE_INSTANCE_SQL = "DELETE FROM passorch_instances WHERE instance_id = ?"
+_UPDATE_INSTANCE_SQL = "UPDATE passorch_instances SET payload = ? WHERE instance_id = ?"
 _CLEAR_INSTANCES_SQL = "DELETE FROM passorch_instances"
 
 
@@ -172,6 +174,13 @@ class _InstanceDatabase:
     def delete_instance(self, instance_id: str) -> bool:
         return (
             self._db.write(_DELETE_INSTANCE_SQL, (instance_id,), failure=_DELETE_FAILED) > 0
+        )
+
+    def update_instance(self, record: TargetInstanceRecord) -> bool:
+        payload = _record_to_payload(record)
+        return (
+            self._db.write(_UPDATE_INSTANCE_SQL, (payload, record.id), failure=_UPDATE_FAILED)
+            > 0
         )
 
     def load_instances(self, capacity: int) -> tuple[TargetInstanceRecord, ...]:
@@ -278,6 +287,32 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
                 return False
             self._db.delete_instance(existing.id)
             return super().delete(instance_id)
+
+    def update(
+        self,
+        instance_id: object,
+        *,
+        name: object = None,
+        description: object = None,
+    ) -> TargetInstanceRecord | None:
+        """Update the database row first, then the in-memory record.
+
+        A database failure raises before memory changes, so the stored
+        values stay truthful and the update stays retryable; malformed or
+        unknown identifiers answer ``None`` identically, mirroring the
+        base class contract.  The row keeps its ``seq`` (insertion
+        position) - only the JSON payload is rewritten.
+        """
+
+        with self._lock:
+            existing = self.get(instance_id)
+            if existing is None:
+                return None
+            candidate = self._updated_record(existing, name, description)
+            if not self._db.update_instance(candidate):
+                raise InstancePersistenceError(_UPDATE_FAILED)
+            self._instances[existing.id] = candidate
+            return candidate
 
     def reset(self) -> None:
         """Clear the database first, then memory (all-or-nothing on failure)."""

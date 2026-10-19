@@ -25,6 +25,10 @@ risks are expanded in [THREAT_MODEL.md](../THREAT_MODEL.md#residual-risks-accept
   there is no multi-node setup, external database, or HA story.
 * **Backups are your job.** `backup_database` (online-backup API) is
   provided; scheduling, encryption and retention are not.
+* **Capacity-bounded retention, pruned at open.** Each store keeps at
+  most `capacity` records (default 100 per store, newest wins); opening
+  a database that holds more rows prunes the oldest rows from the file
+  (one-way — there is no archive or undelete).
 * **Schema upgrades are one-way.** A database stamped by a *newer* schema
   than the running code is rejected fail-closed.
 
@@ -32,8 +36,12 @@ risks are expanded in [THREAT_MODEL.md](../THREAT_MODEL.md#residual-risks-accept
 
 * **Rate limits are per process and per peer address.** Counters reset on
   restart and are not shared across workers; multi-worker or multi-host
-  deployments need proxy-level limits. `X-Forwarded-For` is deliberately
-  ignored (documented).
+  deployments need proxy-level limits. `X-Forwarded-For` is ignored by
+  default; operators behind a known reverse proxy can pin an exact-IP
+  trust anchor (`PASSORCH_TRUSTED_PROXIES`) so real client hops become
+  the key — every other request guard is unaffected, and malformed
+  forwarding data fails closed to the socket peer (README, "Trusted
+  proxies").
 * **Chunked uploads are unsupported.** State-changing requests that carry
   `Transfer-Encoding` are rejected with HTTP 400 before any body is read,
   so the `Content-Length` body cap cannot be bypassed; clients must send

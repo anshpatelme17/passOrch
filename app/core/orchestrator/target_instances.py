@@ -1,4 +1,4 @@
-"""Phase 3C - target instance orchestration.
+"""Phase 3C/4 - target instance orchestration.
 
 ``create_target_instance`` is the only authorised way to mint and persist a
 target instance record.  It validates the name / target type against the
@@ -7,6 +7,10 @@ canonical UUID ``instance_id`` (freshly minted unless supplied), stamps an
 epoch ``created_at`` via an injectable clock, and stores the record through an
 injectable :class:`~app.engines.target_instances.TargetInstanceStore`
 (default: the process-wide singleton).
+
+``update_target_instance`` is the only authorised way to mutate one: the
+mutable fields (``name``, ``description``) go through the same store gate;
+``id``, ``target_type`` and ``created_at`` stay immutable.
 
 Security boundary:
 
@@ -31,7 +35,7 @@ from app.engines.target_instances import (
     is_valid_target_type,
 )
 
-__all__ = ["create_target_instance", "resolve_target_instance"]
+__all__ = ["create_target_instance", "resolve_target_instance", "update_target_instance"]
 
 
 def resolve_target_instance(
@@ -83,3 +87,29 @@ def create_target_instance(
 
     effective = store if isinstance(store, TargetInstanceStore) else default_target_instance_store()
     return effective.put(record)
+
+
+def update_target_instance(
+    instance_id: object,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    store: TargetInstanceStore | None = None,
+) -> TargetInstanceRecord | None:
+    """Apply a mutable-field update to a stored target instance.
+
+    Only ``name`` and ``description`` are mutable; the immutable fields
+    (``id``, ``target_type``, ``created_at``) are never touched and an
+    update keeps the record's insertion position.  Unknown or malformed
+    identifiers answer ``None`` (the route turns that into a generic
+    404); invalid replacement values raise
+    :class:`~app.engines.target_instances.InvalidTargetInstanceError`
+    from the store; an empty patch (no mutable field supplied) raises
+    ``ValueError``.  No process execution, no discovery, no engine
+    invocation - the store remains the single gate.
+    """
+
+    if name is None and description is None:
+        raise ValueError("at least one of name or description is required")
+    effective = store if isinstance(store, TargetInstanceStore) else default_target_instance_store()
+    return effective.update(instance_id, name=name, description=description)

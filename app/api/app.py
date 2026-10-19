@@ -40,10 +40,19 @@ overrides and form posts elsewhere).  State-changing requests that use
 ``Transfer-Encoding`` (chunked uploads) are rejected with ``HTTP 400``
 before any body is read, so the body cap cannot be bypassed by omitting
 ``Content-Length``.
+
+Phase 12B adds opt-in trusted-proxy client addressing for the rate
+limiter: by default the key is the socket peer and ``X-Forwarded-For``
+is never consulted; ``trusted_proxies`` (or ``PASSORCH_TRUSTED_PROXIES``)
+pins an exact-IP trust anchor so requests arriving from a trusted proxy
+are keyed by the real client hop.  Authentication, body caps and every
+other guard are unaffected, and malformed forwarding data fails closed
+to the peer.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -56,9 +65,11 @@ from app.api.rate_limit import (
     RateLimitConfig,
     RateLimiter,
     configured_limits,
+    configured_trusted_proxies,
     exceeds_body_limit,
     payload_too_large_detail,
     rate_limited_detail,
+    resolve_client_address,
     unsupported_transfer_encoding_detail,
 )
 from app.api.routes.engines import router as engines_router
@@ -147,8 +158,9 @@ def _install_request_guards(
     application: FastAPI,
     limits: RateLimitConfig,
     expected_token: str | None,
+    trusted_proxies: frozenset[str],
 ) -> None:
-    """Phases 8E/9A/11D: rate limiting (429), auth (401), body cap (413),
+    """Phases 8E/9A/11D/12B: rate limiting (429), auth (401), body cap (413),
     transfer-encoding rejection (400), same-origin safety headers.
 
     Fail-closed and additive: the middleware runs before every handler and
@@ -162,10 +174,12 @@ def _install_request_guards(
     (``X-Content-Type-Options: nosniff``, ``X-Frame-Options: DENY``,
     ``Referrer-Policy: no-referrer`` and ``Content-Security-Policy``) -
     they do not change API or SPA behaviour.  Counters live on this
-    application instance, keyed by the socket peer address
-    (``X-Forwarded-For`` is never consulted); the expected token is
-    captured only in this closure - never on ``application.state`` (which
-    carries just the boolean ``auth_enabled``).  See the
+    application instance, keyed by the resolved client address: the
+    socket peer by default (``X-Forwarded-For`` never consulted), or the
+    real client hop when the peer is a trusted reverse proxy
+    (``trusted_proxies``); the expected token is captured only in this
+    closure - never on ``application.state`` (which carries just the
+    boolean ``auth_enabled`` and the resolved trust anchor).  See the
     ``app.api.rate_limit`` and ``app.api.auth`` docstrings plus README
     for documented limits.
     """
@@ -181,12 +195,17 @@ def _install_request_guards(
     application.state.rate_limiter = limiter
     application.state.max_body_bytes = limits.max_body_bytes
     application.state.auth_enabled = expected_token is not None
+    application.state.trusted_proxies = trusted_proxies
 
     @application.middleware("http")
     async def request_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
         if request.method in MUTATING_METHODS:
             client = request.client
-            retry_after = limiter.check("unknown" if client is None else client.host)
+            peer = "unknown" if client is None else client.host
+            key = resolve_client_address(
+                peer, request.headers.get("x-forwarded-for"), trusted_proxies
+            )
+            retry_after = limiter.check(key)
             if retry_after is not None:
                 response = JSONResponse(
                     status_code=429,
@@ -231,6 +250,7 @@ def create_app(
     rate_limit: int | None = None,
     rate_window_seconds: float | None = None,
     max_body_bytes: int | None = None,
+    trusted_proxies: str | Iterable[str] | None = None,
     api_token: str | None = None,
 ) -> FastAPI:
     """Build the PassOrch API with injectable read-only registries and store.
@@ -244,13 +264,24 @@ def create_app(
     injected store (``job_store``, ``target_instance_store``) is
     mutually exclusive with the explicit ``job_db_path`` parameter.
 
-    Request guards (Phase 8E): state-changing requests are limited per
+    Request guards (Phase 8E/12B): state-changing requests are limited per
     client address (``rate_limit`` / ``rate_window_seconds`` default from
     ``PASSORCH_RATE_LIMIT`` / ``PASSORCH_RATE_WINDOW_SECONDS``) and their
     bodies capped at ``max_body_bytes`` (``PASSORCH_MAX_BODY_BYTES``,
     default 64 KiB).  Guards only reject - ``429`` with ``Retry-After``
     or ``413 payload_too_large`` - and invalid settings fail fast here at
     construction instead of silently disabling a guard.
+
+    Trusted proxies (Phase 12B): by default the rate-limit key is the
+    socket peer address and ``X-Forwarded-For`` is never consulted.  An
+    operator running behind a reverse proxy can pass an exact-IP trust
+    anchor as ``trusted_proxies`` (comma-separated string or iterable; a
+    ``PASSORCH_TRUSTED_PROXIES`` environment variable is the process-wide
+    equivalent, the explicit argument wins) so requests arriving *from* a
+    trusted proxy are keyed by the real client hop instead.  Only the
+    rate-limit key is affected: authentication, body caps and every
+    other guard are unchanged, and malformed forwarding data always
+    fails closed to the socket peer.
 
     Authentication (Phase 9A): an explicit ``api_token`` - or the
     ``PASSORCH_API_TOKEN`` environment variable - requires a valid
@@ -267,6 +298,7 @@ def create_app(
         raise ValueError("target_instance_store and job_db_path are mutually exclusive")
     limits = configured_limits(rate_limit, rate_window_seconds, max_body_bytes)
     expected_token = configured_api_token(api_token)
+    trust_anchor = configured_trusted_proxies(trusted_proxies)
     application = FastAPI(
         title="PassOrch (simulated)",
         version="2d.0",
@@ -291,7 +323,7 @@ def create_app(
     application.state.target_instance_store = _build_target_instance_store(
         target_instance_store, job_db_path
     )
-    _install_request_guards(application, limits, expected_token)
+    _install_request_guards(application, limits, expected_token, trust_anchor)
     application.include_router(targets_router)
     application.include_router(engines_router)
     application.include_router(jobs_router)
@@ -305,6 +337,34 @@ def create_app(
     @application.get("/health", tags=["meta"])
     def health() -> dict[str, str]:
         return {"status": "ok", "mode": "simulated"}
+
+    @application.get("/health/ready", tags=["meta"])
+    def readiness() -> JSONResponse:
+        """Readiness probe: both stores answer a read-only listing.
+
+        Liveness (``/health``) is unconditional; readiness additionally
+        verifies - without writing anything and without touching SQLite
+        (persistent stores hydrate at construction, so listings are pure
+        memory reads) - that each configured store can still produce its
+        snapshot.  A store failure answers one generic ``503
+        not_ready`` detail: no exception text, path, SQL or traceback,
+        and the failure is never logged (the application never logs).
+        """
+
+        try:
+            application.state.job_store.list()
+            application.state.target_instance_store.list()
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": {
+                        "error": "not_ready",
+                        "detail": "readiness probe failed",
+                    }
+                },
+            )
+        return JSONResponse(content={"status": "ok", "mode": "simulated"})
 
     return application
 

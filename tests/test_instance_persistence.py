@@ -735,3 +735,97 @@ def test_readme_documents_persistence_for_instances() -> None:
     assert "target_instance_store" in readme
     assert "InstancePersistenceError" in readme
     assert "same database file" in readme
+
+
+# -- Phase 4: the PATCH update mirror --------------------------------------- #
+
+
+def test_update_failure_returns_structured_503_and_keeps_stored_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PersistentTargetInstanceStore(tmp_path / "instances.db")
+    client = _store_client(store)
+    created = _create_instance(client)
+
+    def _explode(record: TargetInstanceRecord) -> bool:
+        raise InstancePersistenceError("failed to update an instance record /data/secret.db")
+
+    monkeypatch.setattr(store._db, "update_instance", _explode)
+    response = client.patch(
+        f"/api/target-instances/{_instance_id(created)}", json={"name": "doomed"}
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "error": "persistence_unavailable",
+        "detail": "target instance storage is temporarily unavailable",
+    }
+    body = response.text.lower()
+    assert "sqlite" not in body
+    assert "traceback" not in body
+    assert "secret.db" not in body
+    assert str(tmp_path).lower() not in body
+
+    # the in-memory view stays truthful: the failed update was never applied
+    stored = store.get(_instance_id(created))
+    assert stored is not None
+    assert stored.name == "instance"
+    assert stored.description == "recorded"
+    # and the update stays retryable once the database recovers
+    monkeypatch.undo()
+    retry = client.patch(
+        f"/api/target-instances/{_instance_id(created)}", json={"name": "doomed"}
+    )
+    assert retry.status_code == 200
+    assert store.get(_instance_id(created)).name == "doomed"
+
+
+def test_update_is_mirrored_and_survives_reopen(tmp_path: Path) -> None:
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db)
+    client = _store_client(store)
+    first = _create_instance(client, name="first")
+    second = _create_instance(client, name="second")
+
+    response = client.patch(
+        f"/api/target-instances/{_instance_id(first)}",
+        json={"name": "first-renamed", "description": "changed"},
+    )
+    assert response.status_code == 200
+
+    reopened = PersistentTargetInstanceStore(db)
+    hydrated_first = reopened.get(_instance_id(first))
+    hydrated_second = reopened.get(_instance_id(second))
+    assert hydrated_first is not None
+    assert hydrated_first.name == "first-renamed"
+    assert hydrated_first.description == "changed"
+    assert hydrated_first.target_type == hydrated_second.target_type == "pdf-document"
+    # insertion order is preserved across the update and the reopen
+    assert [r.id for r in reopened.list()] == [_instance_id(first), _instance_id(second)]
+
+
+def test_update_rewrites_only_the_payload_row(tmp_path: Path) -> None:
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db)
+    client = _store_client(store)
+    created = _create_instance(client)
+    instance_id = _instance_id(created)
+    seq_before = sqlite3.connect(db).execute(
+        "SELECT seq FROM passorch_instances WHERE instance_id = ?", (instance_id,)
+    ).fetchone()[0]
+
+    assert (
+        client.patch(f"/api/target-instances/{instance_id}", json={"name": "rewritten"}).status_code
+        == 200
+    )
+
+    connection = sqlite3.connect(db)
+    try:
+        row = connection.execute(
+            "SELECT seq, payload FROM passorch_instances WHERE instance_id = ?", (instance_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row[0] == seq_before, "an update must not change the row's seq/position"
+    payload = json.loads(row[1])
+    assert payload["name"] == "rewritten"
+    assert set(payload) == {"id", "name", "target_type", "description", "created_at"}

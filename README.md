@@ -25,7 +25,8 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check — returns `{status, mode}` |
+| GET | `/health` | Liveness check — returns `{status, mode}` |
+| GET | `/health/ready` | Readiness check — both stores listable → `{status, mode}`; a store failure answers a generic `503 not_ready` |
 | GET | `/api/targets` | List read-only target format policy |
 | POST | `/api/targets/{target_id}/compatibility/plan` | Simulation-only plan preview |
 | GET | `/api/engines` | List all engine capability states |
@@ -38,6 +39,7 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 | POST | `/api/target-instances` | Create target instance |
 | GET | `/api/target-instances` | List target instances (oldest-first). Query params: `target_type` (exact), `name` (case-insensitive substring), `limit` (default 50, max 100), `offset` (default 0). Filters apply before pagination; unknown filter values return an empty page |
 | GET | `/api/target-instances/{id}` | Get one instance |
+| PATCH | `/api/target-instances/{id}` | Update the mutable fields (`name`, `description` only — `id`, `target_type`, `created_at` are immutable; attempts to send them are 422, an empty patch is 422, unknown id is 404, 503 if a configured persistent store write fails) |
 | DELETE | `/api/target-instances/{id}` | Delete instance |
 
 ## Frontend Views
@@ -54,13 +56,17 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 ## Setup
 
 ```bash
-pip install -c constraints.txt -e .
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install --no-deps -e .
 ```
 
-(`constraints.txt` pins the dependency closure verified against this
-codebase; the ranges in `pyproject.toml` remain the source of truth for
-compatibility. For development also install the test extra — see
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).)
+(`requirements.lock` hash-verifies every dependency artifact against
+digests taken from the PyPI API — the same flow CI and Docker use — and
+already includes the test tooling (`pytest`, `httpx`, `ruff`, `mypy`).
+`constraints.txt` is the human-readable range-pin reference; the ranges
+in `pyproject.toml` remain the source of truth for compatibility. See
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the pin-regeneration
+procedure.)
 
 ## Running
 
@@ -115,8 +121,18 @@ or per application: `create_app(rate_limit=120, rate_window_seconds=60, max_body
 - **Oversized body**: `HTTP 413` with `{"error": "payload_too_large", "detail": "request body exceeds the configured size limit"}`; the rejected body never reaches a handler.
 - **Chunked framing**: state-changing requests that carry `Transfer-Encoding` are rejected with `HTTP 400` and `{"error": "unsupported_transfer_encoding", "detail": "transfer-encoded request bodies are not supported"}` before any body byte is read — chunked uploads cannot bypass the `Content-Length` cap and are unsupported by design.
 - **Additive, not instead**: guards run before route validation and the execution policy — a rejected request records nothing, and allowing a request never relaxes validation, the execution policy or persistence checks.
-- **Client key**: the socket peer address. `X-Forwarded-For` is deliberately ignored because it is spoofable without a trusted proxy in front; put a real reverse proxy with its own limits in front of the app for internet exposure.
+- **Client key**: the socket peer address. `X-Forwarded-For` is deliberately ignored by default because it is spoofable without a trusted proxy in front; put a real reverse proxy with its own limits in front of the app for internet exposure. Operators who run behind a known reverse proxy can pin an exact-IP trust anchor with `PASSORCH_TRUSTED_PROXIES` (comma-separated exact IPs) or `create_app(trusted_proxies=...)` — see **Trusted proxies** below.
 - **Limits**: counters are process-local — restarting clears them and separate worker processes do not share them — and the per-address table is bounded (newest 1000 addresses tracked; evicting an old address resets its counter). A mutation with neither `Content-Length` nor `Transfer-Encoding` is treated as bodyless (empty-body `DELETE` stays supported).
+
+### Trusted proxies
+
+By default every mutation is counted against the socket peer address and `X-Forwarded-For` is never consulted — the header is spoofable, so trusting it would let a client mint fresh buckets at will. An operator terminating TLS at a known reverse proxy can opt in to real-client keying:
+
+```bash
+export PASSORCH_TRUSTED_PROXIES=127.0.0.1,10.0.0.2
+```
+
+or per application: `create_app(trusted_proxies="127.0.0.1")` — an explicit argument wins over the environment variable, and every entry must be a valid exact IP address (IPv4 or IPv6; hostnames and CIDR ranges fail fast with a generic `ValueError` at construction). With the anchor set, only requests whose *socket peer is itself a trusted proxy* consult `X-Forwarded-For`: the chain is walked right-to-left past trusted hops and the first untrusted hop becomes the rate-limit key. Anything malformed — a missing header, an unparseable hop, a chain that is entirely trusted — fails closed to the socket peer, so a client identity is never invented. Only the rate-limit key is affected: authentication, body caps, the execution policy and every other guard are unchanged. Keep the trust list minimal (loopback and your proxy's address) — a client that can reach the app on a trusted address can choose its own key, which is rate-limit manipulation, never authorisation.
 
 ## Authentication
 
@@ -141,7 +157,7 @@ What PassOrch does and does not provide when deployed:
 - **Built-in controls**: fail-closed execution policy, strict schemas, opt-in bearer authentication, per-address mutation rate limiting with `Retry-After`, a request-body cap with chunked-framing rejection, same-origin safety response headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a strict `Content-Security-Policy`), structured generic errors (no stack traces, SQL, or paths), no cracking-engine execution anywhere, and only one subprocess-capable path (allowlisted discovery metadata commands, `shell=False` — see **Security Model**).
 - **Open reads**: unauthenticated `GET` endpoints expose job, instance, and engine metadata to anyone who can reach the port — safe on loopback, so keep the port local or behind an authenticated proxy.
 - **CORS**: not configured — the API emits no `Access-Control-Allow-*` headers and browsers treat the SPA as same-origin. Do not add a wildcard CORS policy.
-- **Still required when exposing it**: TLS termination and network restriction at a **reverse proxy** (the app speaks plain HTTP and does not terminate TLS); proxy-level rate limits and body caps for multi-worker deployments (the in-process counters are per worker and reset on restart); a trusted-proxy setup if client addresses matter (`X-Forwarded-For` is deliberately ignored); regular backups of the configured database file; and secret management for `PASSORCH_API_TOKEN`.
+- **Still required when exposing it**: TLS termination and network restriction at a **reverse proxy** (the app speaks plain HTTP and does not terminate TLS); proxy-level rate limits and body caps for multi-worker deployments (the in-process counters are per worker and reset on restart); the `PASSORCH_TRUSTED_PROXIES` anchor if per-client rate limiting must see through that proxy (see **Trusted proxies**); regular backups of the configured database file; and secret management for `PASSORCH_API_TOKEN`.
 - **Not provided**: multi-tenant isolation, user accounts or roles, sessions or CSRF tokens for the SPA, and shared cross-process rate-limit state. Do not expose PassOrch directly to the internet.
 
 ## Docker
@@ -167,12 +183,12 @@ docker compose down -v     # ...or also delete the stored database
 
 - **Persistence**: the container stores the shared SQLite database (jobs + target instances) at `/data/passorch.db` on the `passorch-data` named volume (default SQLite rollback-journal mode, so there are no WAL/SHM sidecar files); container recreation does not delete it, `down -v` does.
 - **Secrets**: never baked into the image or Compose file — set `PASSORCH_API_TOKEN` and guard tuning in your local `.env` (see `.env.example`); the image ships with authentication off, matching local development.
-- **Health**: the image `HEALTHCHECK` calls the unauthenticated, read-only `/health` endpoint (no database, discovery, or engine activity).
+- **Health**: the image `HEALTHCHECK` calls the unauthenticated, read-only `/health/ready` endpoint (in-memory store listings only — no SQLite access, discovery, or engine activity — and no writes), so the orchestrator stops routing to an instance whose stores are broken.
 - **Network**: the server listens on `0.0.0.0` *inside* the container (required for the published port); Compose publishes it on `127.0.0.1:8000` only. Remote exposure still requires everything listed under **Deployment** (TLS, reverse proxy, authentication, network restriction) — containerization does not provide those.
 
 ## Operations
 
-- **Health semantics**: `GET /health` returns exactly `{"status": "ok", "mode": "simulated"}`. It is a *liveness* probe — unauthenticated by design, side-effect free (it never touches the database, discovery, or engines), and it exposes no paths, tokens, or tracebacks. There is no separate readiness endpoint: readiness is enforced at construction — an unusable database, invalid schema, or bad security configuration fails startup, so a running process is always "ready".
+- **Health semantics**: `GET /health` returns exactly `{"status": "ok", "mode": "simulated"}`. It is a *liveness* probe — unauthenticated by design, side-effect free (it never touches the database, discovery, or engines), and it exposes no paths, tokens, or tracebacks. `GET /health/ready` is the *readiness* probe: it additionally lists each configured store once (a pure in-memory read — persistent stores hydrate at construction, so the probe never opens SQLite or writes anything) and answers `200` with the same body, or one generic `503 {"error": "not_ready", "detail": "readiness probe failed"}` when a store fails, with no exception text, SQL, path or traceback. Startup failures (unusable database, invalid schema, bad security configuration) still stop the process before it can answer either probe.
 - **Logging**: operational request logging comes from uvicorn's access and error logs (method, path, status, duration; full server-side traceback for unhandled 500s). The application modules themselves **never log** — this is a tested security contract, so bearer tokens, authorization headers, request bodies, and database paths cannot reach stdout or a log file. Client-facing errors stay generic; runtime persistence failures surface as structured `503 persistence_unavailable` responses, while startup persistence failures stop the process with a server-side traceback.
 - **Shutdown**: `docker stop` sends SIGTERM, which uvicorn handles as a graceful shutdown; persisted records live on the volume, not in the container. Stopping or recreating the container never deletes the configured database (only `docker compose down -v` removes the volume).
 - **Backup and restore**: use `backup_database` (see **Persistence**) — the SQLite online-backup API copies a live database consistently; reverse the arguments to restore. Back up the configured file (in a container: `docker compose exec` or a volume snapshot) before upgrades.
@@ -184,8 +200,9 @@ docker compose down -v     # ...or also delete the stored database
 
 1. Python test suite (`python -m pytest --tb=short`) — no real token, database, engine, or external service is required; tests use temporary directories and in-memory stores.
 2. Ruff (`python -m ruff check .`).
-3. Whitespace check (`git diff --check`).
-4. Frontend harness via its verified invocation (`python -m pytest tests/test_frontend_js_execution.py`, which needs Node.js 20+).
+3. Typing gate (`python -m mypy app/api app/engines` — scoped to the API and engine layers; see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)).
+4. Whitespace check (`git diff --check`).
+5. Frontend harness via its verified invocation (`python -m pytest tests/test_frontend_js_execution.py`, which needs Node.js 20+).
 
 CI needs no repository secrets and must not be granted any.
 
@@ -197,6 +214,9 @@ python -m pytest --tb=short
 
 # Lint
 python -m ruff check .
+
+# Typing gate (app/api + app/engines)
+python -m mypy app/api app/engines
 
 # JavaScript tests (requires Node.js 20+; this is the CI invocation)
 python -m pytest tests/test_frontend_js_execution.py

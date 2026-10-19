@@ -1,20 +1,25 @@
 /*
- * Target instances screen (Phase 4B.3).
+ * Target instances screen (Phase 4B.3/4).
  *
- * Read + create + delete over the Phase 3C target-instance endpoints. Every
- * mutation requires an explicit confirmation before the request is issued, and
- * the list is refreshed only after a *successful* mutation - never on failure.
+ * Read + create + edit + delete over the Phase 3C target-instance endpoints.
+ * Every mutation requires an explicit confirmation before the request is
+ * issued, and the list is refreshed only after a *successful* mutation -
+ * never on failure.
  *
  * Endpoints used - nothing else is called from this module:
  *   GET    /api/target-instances       -> {instances: [...], count, total, ...}
  *                                          (optional target_type / name filters,
  *                                          limit / offset pagination)
  *   POST   /api/target-instances       -> 201 TargetInstance
+ *   PATCH  /api/target-instances/{id}  -> 200 TargetInstance (name/description)
  *   DELETE /api/target-instances/{id}  -> 204 No Content (empty body)
  *   GET    /api/target-instances/{id}  -> 200 TargetInstance (detail row)
  *
  * Schemas (verified against app/api/schemas.py):
  *   TargetInstanceCreateRequest: {name: str, target_type: str, description: str = ""}
+ *   TargetInstanceUpdateRequest: {name?: str, description?: str} - only the
+ *     mutable fields; id, target_type and created_at are immutable and any
+ *     attempt to send them is rejected by the server (extra="forbid").
  *   TargetInstance: {id, name, target_type, description, created_at}
  * Server constraints mirrored in client-side validation:
  *   name non-blank and <= 128 chars; description <= 1024 chars;
@@ -94,6 +99,24 @@ function validateForm(state) {
   }
   if (!isNonEmptyString(state && state.target_type)) {
     problems.push("A target type is required.");
+  }
+  const description = state && typeof state.description === "string" ? state.description : "";
+  if (description.length > MAX_DESCRIPTION_LENGTH) {
+    problems.push(`Description must be at most ${MAX_DESCRIPTION_LENGTH} characters.`);
+  }
+  return problems;
+}
+
+/**
+ * The edit form mirrors the same server bounds minus target_type, which is
+ * immutable on PATCH (the server rejects it with a 422).
+ */
+function validateEditForm(state) {
+  const problems = [];
+  if (!isNonEmptyString(state && state.name)) {
+    problems.push("Name is required.");
+  } else if (state.name.length > MAX_NAME_LENGTH) {
+    problems.push(`Name must be at most ${MAX_NAME_LENGTH} characters.`);
   }
   const description = state && typeof state.description === "string" ? state.description : "";
   if (description.length > MAX_DESCRIPTION_LENGTH) {
@@ -302,7 +325,13 @@ async function renderList() {
         badge(inst.target_type || "", "muted"),
         text(inst.description || "-"),
         typeof inst.created_at === "number" ? String(inst.created_at) : "-",
-        button("Delete", () => confirmAndDelete(inst)),
+        h("div", {
+          class: "actions",
+          children: [
+            button("Edit", () => renderEditForm(inst)),
+            button("Delete", () => confirmAndDelete(inst)),
+          ],
+        }),
       ])
     ),
     h("p", { class: "panel__hint", text: `${total} target instance(s) defined.` }),
@@ -546,7 +575,6 @@ function confirmAndDelete(instance) {
 
 /** Guards delete against a second click while a request is pending. */
 let deletingInstanceId = "";
-
 async function processDelete(instanceId, label) {
   const slot = listSlot;
   if (!slot) {
@@ -576,6 +604,155 @@ async function processDelete(instanceId, label) {
     renderList();
   } finally {
     deletingInstanceId = "";
+  }
+}
+
+/* ---- edit ----------------------------------------------------------------- */
+
+/**
+ * Inline edit form for the mutable fields only (name, description). The
+ * target type, id and created-at are immutable - the form never offers them
+ * and the server rejects attempts to send them. Values are prefilled from the
+ * row; a failure keeps the form (and the entered values) for a retry.
+ */
+function renderEditForm(instance, errorMessage) {
+  const slot = listSlot;
+  if (!slot) {
+    return;
+  }
+  const state = {
+    name: isNonEmptyString(instance.name) ? instance.name : "",
+    description: typeof instance.description === "string" ? instance.description : "",
+  };
+  const label = isNonEmptyString(instance.name) ? instance.name : instance.id;
+
+  const nameInput = h("input", {
+    class: "field__control",
+    attrs: [
+      ["id", "instance-edit-name"],
+      ["name", "name"],
+      ["maxlength", String(MAX_NAME_LENGTH)],
+      ["required", ""],
+    ],
+  });
+  nameInput.value = state.name;
+  nameInput.addEventListener("input", (event) => {
+    state.name = event.target.value;
+  });
+
+  const descInput = h("input", {
+    class: "field__control",
+    attrs: [
+      ["id", "instance-edit-description"],
+      ["name", "description"],
+      ["maxlength", String(MAX_DESCRIPTION_LENGTH)],
+    ],
+  });
+  descInput.value = state.description;
+  descInput.addEventListener("input", (event) => {
+    state.description = event.target.value;
+  });
+
+  const problemsSlot = h("p", { class: "field__help" });
+  if (errorMessage) {
+    render(problemsSlot, [text(errorMessage)]);
+  }
+
+  const save = button("Save changes", () => {
+    const problems = validateEditForm(state);
+    if (problems.length > 0) {
+      render(problemsSlot, [
+        text("Please fix the following before submitting - " + problems.join(" ")),
+      ]);
+      return;
+    }
+    processUpdate(instance, label, state, (errorMessage) =>
+      // Re-open with the values the user typed, not the stale row snapshot.
+      renderEditForm(
+        {
+          id: instance.id,
+          name: state.name,
+          description: state.description,
+        },
+        errorMessage
+      )
+    );
+  }, "btn btn--primary");
+
+  render(slot, [
+    h("div", {
+      class: "state",
+      children: [
+        h("p", { class: "state__title", text: `Edit target instance "${label}"` }),
+        h("p", {
+          class: "panel__hint",
+          text: "Only the name and description can be changed. The target type, id and creation time are immutable.",
+        }),
+        h("div", {
+          class: "form-grid",
+          children: [
+            h("div", {
+              class: "field",
+              children: [
+                h("label", {
+                  class: "field__label",
+                  text: "Name",
+                  attrs: [["for", "instance-edit-name"]],
+                }),
+                nameInput,
+              ],
+            }),
+            h("div", {
+              class: "field",
+              children: [
+                h("label", {
+                  class: "field__label",
+                  text: "Description",
+                  attrs: [["for", "instance-edit-description"]],
+                }),
+                descInput,
+              ],
+            }),
+            problemsSlot,
+            h("div", {
+              class: "actions",
+              children: [save, button("Cancel", renderList)],
+            }),
+          ],
+        }),
+      ],
+    }),
+  ]);
+  // Focus is a browser nicety; the Node DOM shim does not implement it.
+  if (typeof nameInput.focus === "function") {
+    nameInput.focus();
+  }
+}
+
+/** Guards update against a second click while a request is pending. */
+let updatingInstanceId = "";
+
+async function processUpdate(instance, label, state, rerender) {
+  if (updatingInstanceId) {
+    return;
+  }
+  updatingInstanceId = instance.id;
+  try {
+    // Only the mutable fields are ever sent; immutable ones stay server-side.
+    const payload = { name: state.name, description: state.description || "" };
+    const res = await api.patch(`/api/target-instances/${instance.id}`, payload);
+    if (!res.ok) {
+      // Keep the edit form (with values and the error) for a retry.
+      rerender(res.error.message);
+      return;
+    }
+    const data = res.data;
+    const updatedName = data && typeof data.name === "string" ? data.name : payload.name;
+    renderFeedback("success", `Updated target instance "${updatedName}".`);
+    // Refresh only after a successful update.
+    renderList();
+  } finally {
+    updatingInstanceId = "";
   }
 }
 
@@ -610,7 +787,7 @@ async function renderInstances(root) {
         filterSlot,
         listSlot,
       ],
-      "Create, inspect and remove target instances."
+      "Create, edit, inspect and remove target instances."
     ),
     Panel("Create a target instance", [h("div", { class: "section-body" }), feedbackSlot, formSlot]),
     Panel(
@@ -619,7 +796,7 @@ async function renderInstances(root) {
         h("p", {
           class: "panel__hint",
           text:
-            "Creating or deleting a target instance does not run anything. No engine binary is invoked, no attack is performed, and no capability data is probed from the browser.",
+            "Creating, editing or deleting a target instance does not run anything. No engine binary is invoked, no attack is performed, and no capability data is probed from the browser.",
         }),
       ]
     ),

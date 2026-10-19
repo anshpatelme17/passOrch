@@ -107,7 +107,7 @@ async function parseBody(response) {
  * is populated for any non-2xx response or transport failure.
  *
  * @param {string} path
- * @param {{method?: "GET"|"POST"|"DELETE", body?: object, signal?: AbortSignal}} [options]
+ * @param {{method?: "GET"|"POST"|"PATCH"|"DELETE", body?: object, signal?: AbortSignal}} [options]
  * @returns {Promise<{ok: boolean, status: number, data: any, raw: string|null,
  *                    parseError: boolean, error: {kind: string, message: string,
  *                    code: string, detail: any}|null}>}
@@ -212,6 +212,9 @@ export const api = Object.freeze({
   },
   post(path, body, signal) {
     return request(path, { method: "POST", body, signal });
+  },
+  patch(path, body, signal) {
+    return request(path, { method: "PATCH", body, signal });
   },
   delete(path, signal) {
     return request(path, { method: "DELETE", signal });

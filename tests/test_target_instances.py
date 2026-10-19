@@ -1,7 +1,9 @@
-"""Phase 3C tests for target instance management.
+"""Phase 3C/4 tests for target instance management.
 
-Covers store behaviour, validation, API endpoints, determinism through
-injection, isolation from existing systems, and security invariants.
+Covers store behaviour (including the Phase 4 mutable-field ``update``),
+validation, API endpoints (create/list/get/PATCH/delete), determinism
+through injection, isolation from existing systems, and security
+invariants.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from app.api.app import create_app
 from app.core.orchestrator.target_instances import (
     create_target_instance,
     resolve_target_instance,
+    update_target_instance,
 )
 from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
 from app.engines.target_instances import (
@@ -997,3 +1000,184 @@ def test_ti_filters_survive_deletion_of_other_instances():
     body = res.json()
     assert body["total"] == 1
     assert body["instances"][0]["id"] == keep["id"]
+
+
+# -- Phase 4: mutable-field updates (store, orchestrator, PATCH) ------------ #
+
+
+def _created(client: TestClient, name: str = "original") -> dict:
+    response = client.post(
+        "/api/target-instances",
+        json={"name": name, "target_type": "pdf-document", "description": "first"},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_store_update_replaces_only_mutable_fields_in_place():
+    store = TargetInstanceStore()
+    record = create_target_instance("original", "pdf-document", "first", store=store)
+    before = list(store.list())
+
+    updated = store.update(record.id, name="renamed", description="second")
+
+    assert updated is not None
+    assert updated.id == record.id
+    assert updated.name == "renamed"
+    assert updated.description == "second"
+    assert updated.target_type == record.target_type
+    assert updated.created_at == record.created_at
+    # insertion position is preserved - no FIFO reordering on update
+    assert [r.id for r in store.list()] == [r.id for r in before]
+    assert store.get(record.id).name == "renamed"
+
+
+def test_store_update_none_means_unchanged():
+    store = TargetInstanceStore()
+    record = create_target_instance("keep", "pdf-document", "desc", store=store)
+
+    updated = store.update(record.id, name="new-name")
+
+    assert updated is not None
+    assert updated.name == "new-name"
+    assert updated.description == "desc"
+
+
+def test_store_update_unknown_and_malformed_ids_answer_none():
+    store = TargetInstanceStore()
+    record = create_target_instance("keep", "pdf-document", "", store=store)
+
+    assert store.update("00000000-0000-4000-8000-000000000000", name="x") is None
+    assert store.update("not-a-uuid", name="x") is None
+    assert store.update(None, name="x") is None
+    # nothing changed
+    assert store.get(record.id).name == "keep"
+
+
+def test_store_update_rejects_invalid_replacements_without_changing_anything():
+    store = TargetInstanceStore()
+    record = create_target_instance("keep", "pdf-document", "desc", store=store)
+
+    for kwargs in ({"name": ""}, {"name": "   "}, {"name": "n" * (MAX_NAME_LENGTH + 1)},
+                   {"description": "d" * (MAX_DESCRIPTION_LENGTH + 1)}):
+        try:
+            store.update(record.id, **kwargs)
+            raise AssertionError(f"expected InvalidTargetInstanceError for {kwargs}")
+        except InvalidTargetInstanceError:
+            pass
+        current = store.get(record.id)
+        assert current.name == "keep"
+        assert current.description == "desc"
+
+
+def test_orchestrator_update_requires_a_mutable_field():
+    store = TargetInstanceStore()
+    record = create_target_instance("keep", "pdf-document", "", store=store)
+
+    try:
+        update_target_instance(record.id, store=store)
+        raise AssertionError("expected ValueError for an empty patch")
+    except ValueError as exc:
+        assert "at least one" in str(exc)
+
+    assert update_target_instance(record.id, name=None, description="x", store=store) is not None
+
+
+def test_api_patch_updates_mutable_fields_and_preserves_immutable_ones():
+    client, _ = _client()
+    created = _created(client)
+    response = client.patch(
+        f"/api/target-instances/{created['id']}", json={"name": "renamed"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "renamed"
+    assert body["description"] == "first"
+    assert body["id"] == created["id"]
+    assert body["target_type"] == created["target_type"]
+    assert body["created_at"] == created["created_at"]
+
+
+def test_api_patch_updates_description_only():
+    client, _ = _client()
+    created = _created(client)
+    response = client.patch(
+        f"/api/target-instances/{created['id']}", json={"description": "updated"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["description"] == "updated"
+    assert response.json()["name"] == "original"
+
+
+def test_api_patch_unknown_and_malformed_ids_answer_the_same_404():
+    client, _ = _client()
+    _created(client)
+    for identifier in ("00000000-0000-4000-8000-000000000000", "not-a-uuid"):
+        response = client.patch(f"/api/target-instances/{identifier}", json={"name": "x"})
+        assert response.status_code == 404
+        assert response.json()["detail"] == "target_instance_not_found"
+
+
+def test_api_patch_empty_and_invalid_payloads_answer_422():
+    client, _ = _client()
+    created = _created(client)
+    url = f"/api/target-instances/{created['id']}"
+
+    assert client.patch(url, json={}).status_code == 422
+    assert client.patch(url, json={"name": "  "}).status_code == 422
+    assert (
+        client.patch(url, json={"name": "n" * (MAX_NAME_LENGTH + 1)}).status_code == 422
+    )
+    assert (
+        client.patch(url, json={"description": "d" * (MAX_DESCRIPTION_LENGTH + 1)}).status_code
+        == 422
+    )
+
+
+def test_api_patch_rejects_immutable_field_attempts():
+    client, _ = _client()
+    created = _created(client)
+    url = f"/api/target-instances/{created['id']}"
+
+    for payload in (
+        {"name": "x", "target_type": "zip-archive"},
+        {"id": "00000000-0000-4000-8000-000000000000"},
+        {"created_at": 1},
+        {"name": "x", "unexpected": True},
+    ):
+        response = client.patch(url, json=payload)
+        assert response.status_code == 422, payload
+
+    # and the record is untouched after every rejected attempt
+    current = client.get(url).json()
+    assert current["name"] == "original"
+    assert current["target_type"] == "pdf-document"
+    assert current["created_at"] == created["created_at"]
+
+
+def test_api_patch_is_a_mutation_so_reads_stay_open_and_counts_reset_by_list():
+    client, _ = _client()
+    created = _created(client)
+    # GET stays unauthenticated and unlimited; PATCH returns the record.
+    assert client.get(f"/api/target-instances/{created['id']}").status_code == 200
+    assert client.patch(f"/api/target-instances/{created['id']}", json={"name": "z"}).status_code == 200
+
+
+def test_api_patch_triggers_no_discovery_or_execution():
+    import app.engines.discovery.runner as runner_module
+
+    calls = []
+    original = runner_module.run_safe_command
+    try:
+        runner_module.run_safe_command = lambda *a, **k: calls.append((a, k))  # type: ignore[assignment]
+        client, _ = _client()
+        created = _created(client)
+        response = client.patch(
+            f"/api/target-instances/{created['id']}", json={"name": "quiet"}
+        )
+        assert response.status_code == 200
+        assert calls == []
+    finally:
+        runner_module.run_safe_command = original  # type: ignore[assignment]

@@ -78,4 +78,4 @@ def plan_preview(
         mode=body.mode,
         reference=body.reference,
     )
-    return PlanPreviewResponse(**preview.as_dict())
+    return PlanPreviewResponse.model_validate(preview.as_dict())

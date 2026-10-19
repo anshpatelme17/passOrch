@@ -62,7 +62,7 @@ PERSISTENCE_ERROR = "persistence_unavailable"
 #: Stable, structured detail for a target that is not in ``TARGET_FORMAT_POLICY``.
 #: ``supported_targets`` mirrors the read-only catalog exposed by
 #: ``GET /api/targets`` so a caller can build a picker without a second request.
-UNKNOWN_TARGET_DETAIL = {
+UNKNOWN_TARGET_DETAIL: dict[str, object] = {
     "error": UNKNOWN_TARGET_ERROR,
     "detail": "target is not mapped to an enabled format policy",
     "supported_targets": sorted(TARGET_FORMAT_POLICY),
@@ -79,8 +79,8 @@ def unknown_target_detail(target: object) -> dict[str, object]:
     (or a detail already handed to another caller).
     """
 
-    detail = dict(UNKNOWN_TARGET_DETAIL)
-    detail["supported_targets"] = list(UNKNOWN_TARGET_DETAIL["supported_targets"])
+    detail: dict[str, object] = dict(UNKNOWN_TARGET_DETAIL)
+    detail["supported_targets"] = sorted(TARGET_FORMAT_POLICY)
     detail["target"] = target if isinstance(target, str) else ""
     return detail
 
@@ -229,7 +229,7 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
             status_code=503,
             detail=persistence_unavailable_detail(),
         ) from exc
-    return JobInfo(**job.as_dict())
+    return JobInfo.model_validate(job.as_dict())
 
 
 #: Accepted ``sort`` modes for ``GET /api/jobs``.  ``created_desc`` (the
@@ -342,7 +342,7 @@ def detail(job_id: str, request: Request) -> JobInfo:
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job_not_found")
-    return JobInfo(**job.as_dict())
+    return JobInfo.model_validate(job.as_dict())
 
 
 @router.delete("/{job_id}")

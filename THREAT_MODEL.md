@@ -68,7 +68,7 @@ network peer ──► uvicorn ──► rate limit ──► bearer auth ──
 | Stored XSS via job/instance fields | SPA renders exclusively through `textContent`-style helpers; `innerHTML`/`insertAdjacentHTML`/`document.write` banned and executed in CI; a strict same-origin `Content-Security-Policy` (`default-src 'none'` + explicit same-origin sources, `frame-ancestors 'none'`, `base-uri 'none'`) is issued on every response as defence in depth | `frontend-tests/safety.test.mjs`, `tests/test_frontend_js.py`, `tests/test_config_security.py` |
 | CSRF | No cookies, no ambient credentials, no CORS headers; bearer token must be attached explicitly; every GET is side-effect free | `tests/test_config_security.py`, `tests/test_persistence_security.py` |
 | Cross-origin data reads | Same-origin SPA, CORS never issued | `tests/test_config_security.py` |
-| Request forgery via forwarded headers | `X-Forwarded-For` is never consulted; rate limiting keys on the socket peer address only | `tests/test_security_regressions.py` |
+| Request forgery via forwarded headers | `X-Forwarded-For` is never consulted by default; rate limiting keys on the socket peer address only. The opt-in exact-IP trust anchor (`PASSORCH_TRUSTED_PROXIES`) reads the header solely for rate-limit keying, and only when the socket peer is itself trusted; malformed chains fail closed to the peer | `tests/test_security_regressions.py` (single sanctioned read scan), `tests/test_rate_limiting.py` |
 | Resource exhaustion (flood of writes/bodies) | Per-peer mutation rate limit (429 + `Retry-After`), body cap (413) with chunked framing rejected outright (400) so the cap cannot be bypassed, bounded FIFO stores, SQLite busy timeout fails closed | `tests/test_rate_limiting.py`, `tests/test_persistence_security.py` |
 | Silent data loss / dishonest persistence | Writes are transactional and mirrored fail-closed (503 with rollback, never memory-only success); schema migrations are all-or-nothing; startup failures stop the process | `tests/test_job_persistence.py`, `tests/test_e2e_workflow.py` |
 | Privilege confusion at the policy layer | Authenticated ≠ authorised: the execution policy independently denies non-simulated modes and unverified engines, even for valid tokens | `tests/test_e2e_workflow.py`, policy suites |
@@ -82,7 +82,11 @@ network peer ──► uvicorn ──► rate limit ──► bearer auth ──
    free and the SPA has no token store. Network-restrict read access if job
    data is sensitive.
 3. **Per-process, in-memory rate counters** — reset on restart, not shared
-   across workers; multi-worker deployments need proxy-level limits.
+   across workers; multi-worker deployments need proxy-level limits. The
+   opt-in `PASSORCH_TRUSTED_PROXIES` anchor (exact IPs only) lets a
+   deployment behind a known reverse proxy key on real client hops; a
+   client able to reach the app from a trusted address can choose its own
+   rate-limit bucket (manipulation of the limiter, never authorisation).
 4. **Hydrate-once stores** — a second process reading the same database file
    sees a stale snapshot until restart.
 5. **Chunked uploads are unsupported** — state-changing requests that carry
@@ -91,8 +95,15 @@ network peer ──► uvicorn ──► rate limit ──► bearer auth ──
    `Content-Length`-framed bodies.
 6. **Uvicorn access logs** include method/path/status; they are the only
    operational log surface, and application modules never log.
-7. **Dependency supply chain** — stdlib-only application code; dev/test
-   dependencies (`pytest`, `httpx`, `ruff`) are not vendored or hash-pinned.
+7. **Dependency supply chain** — application code is stdlib-only; every
+   third-party artifact CI and Docker install is hash-verified from
+   `requirements.lock` (digests taken from the PyPI JSON API), GitHub
+   Actions are pinned to full commit SHAs, and the container base image
+   is pinned by registry digest. Residual exposure: pip's isolated build
+   environment fetches the `setuptools` build backend without hash
+   pinning, and the lock is maintained by hand (regeneration procedure in
+   docs/DEVELOPMENT.md; `tests/test_deployment_artifacts.py` enforces the
+   pinning format).
 8. **Single-operator model** — no per-user authorisation, audit separation or
    tenancy; anyone with the token (or loopback access when auth is off) can
    write.

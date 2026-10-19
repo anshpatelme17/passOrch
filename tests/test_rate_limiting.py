@@ -1,17 +1,18 @@
-"""Phase 8E - mutation rate limiting and body-size bounds tests.
+"""Phase 8E/12B - mutation rate limiting and body-size bounds tests.
 
 Covers:
 * over-limit mutations answer a structured HTTP 429 with ``Retry-After``
   and never leak internals; reads are never counted; the window resets;
 * the client key is the socket peer address - ``X-Forwarded-For`` is
-  ignored;
+  ignored unless the operator pins the Phase 12B exact-IP trust anchor,
+  and even then only a trusted peer's header is consulted;
 * oversized mutation bodies answer a structured HTTP 413, chunked
   (``Transfer-Encoding``) mutations are rejected with a structured HTTP
   400 before any body is read, and an invalid ``Content-Length`` fails
   closed;
 * configuration: explicit ``create_app`` arguments win over environment
   variables, defaults stay generous, invalid values fail fast at
-  construction;
+  construction without echoing the raw input;
 * the address table stays bounded; and the guards never bypass route
   validation or the execution policy - a rejected request reaches no
   handler and records nothing;
@@ -33,7 +34,9 @@ from app.api.rate_limit import (
     MAX_TRACKED_ADDRESSES,
     RateLimiter,
     configured_limits,
+    configured_trusted_proxies,
     exceeds_body_limit,
+    resolve_client_address,
 )
 from app.engines.discovery.models import (
     CapabilityStatus,
@@ -64,8 +67,13 @@ def _verified_registry() -> DiscoveryRegistry:
     return registry
 
 
-def _job(client: TestClient, mode: str = "simulated", target: str = "pdf-document"):
-    return client.post("/api/jobs", json={"target": target, "mode": mode})
+def _job(
+    client: TestClient,
+    mode: str = "simulated",
+    target: str = "pdf-document",
+    headers: dict[str, str] | None = None,
+):
+    return client.post("/api/jobs", json={"target": target, "mode": mode}, headers=headers)
 
 
 def _fresh_app(**kwargs):
@@ -175,6 +183,231 @@ def test_client_key_is_the_socket_address_not_forwarded_headers() -> None:
         headers={"X-Forwarded-For": "203.0.113.9"},
     )
     assert spoofed.status_code == 429
+
+
+# --------------------------------------------------------------------------- #
+# Phase 12B: opt-in trusted-proxy client addressing
+# --------------------------------------------------------------------------- #
+
+_PROXY_TRUSTED = "203.0.113.10"
+_CLIENT_A = "198.51.100.7"
+_CLIENT_B = "198.51.100.8"
+_TRUST_ERROR = "trusted proxies must be a list of exact IP addresses"
+
+
+def test_trusted_proxy_sees_real_client_hops_in_separate_buckets() -> None:
+    """A trusted proxy's own bucket stays untouched while each forwarded
+    client hop gets its own counter - and the walk stops at the first
+    untrusted hop (rightmost), so a client cannot borrow a neighbour's
+    history by prepending addresses."""
+
+    client = TestClient(
+        _fresh_app(rate_limit=2, rate_window_seconds=60, trusted_proxies=_PROXY_TRUSTED),
+        client=(_PROXY_TRUSTED, 443),
+    )
+
+    for _ in range(2):
+        assert _job(client, headers={"X-Forwarded-For": _CLIENT_A}).status_code == 200
+    assert _job(client, headers={"X-Forwarded-For": _CLIENT_A}).status_code == 429
+
+    # A different client hop is a different bucket.
+    assert _job(client, headers={"X-Forwarded-For": _CLIENT_B}).status_code == 200
+
+    # Multi-hop chain (load balancer -> app): the rightmost untrusted hop
+    # wins, so a chain ending at the already-exhausted _CLIENT_A is still
+    # limited - the walk stopped at A, not at the spoofable outer hop.
+    assert (
+        _job(client, headers={"X-Forwarded-For": f"203.0.113.99, {_CLIENT_A}"}).status_code
+        == 429
+    )
+    # A fresh rightmost hop in the same shape of chain gets its own bucket.
+    assert (
+        _job(client, headers={"X-Forwarded-For": "203.0.113.99, 198.51.100.55"}).status_code
+        == 200
+    )
+
+
+def test_trusted_peer_without_header_falls_back_to_peer_bucket() -> None:
+    client = TestClient(
+        _fresh_app(rate_limit=2, rate_window_seconds=60, trusted_proxies=_PROXY_TRUSTED),
+        client=(_PROXY_TRUSTED, 443),
+    )
+
+    assert _job(client).status_code == 200
+    assert _job(client).status_code == 200
+    assert _job(client).status_code == 429
+
+
+def test_untrusted_peer_never_consults_forwarded_headers() -> None:
+    """Even with the anchor set, a peer outside the trust list is keyed on
+    itself: changing X-Forwarded-For per request must not mint buckets."""
+
+    client = TestClient(
+        _fresh_app(rate_limit=2, rate_window_seconds=60, trusted_proxies=_PROXY_TRUSTED),
+        client=("198.51.100.99", 443),
+    )
+
+    assert _job(client, headers={"X-Forwarded-For": _CLIENT_A}).status_code == 200
+    assert _job(client, headers={"X-Forwarded-For": _CLIENT_B}).status_code == 200
+    assert _job(client, headers={"X-Forwarded-For": "203.0.113.9"}).status_code == 429
+
+
+def test_malformed_forwarding_data_fails_closed_to_the_peer() -> None:
+    for header in (
+        "not-an-ip",
+        f"{_CLIENT_A}, garbage",
+        "unknown",
+        f"{_CLIENT_A},",
+        ",",
+    ):
+        client = TestClient(
+            _fresh_app(
+                rate_limit=2, rate_window_seconds=60, trusted_proxies=_PROXY_TRUSTED
+            ),
+            client=(_PROXY_TRUSTED, 443),
+        )
+        assert _job(client, headers={"X-Forwarded-For": header}).status_code == 200
+        assert _job(client, headers={"X-Forwarded-For": header}).status_code == 200
+        # Third request is over the limit - meaning both malformed attempts
+        # shared the peer bucket instead of minting fresh client buckets.
+        assert _job(client, headers={"X-Forwarded-For": header}).status_code == 429
+
+
+def test_entirely_trusted_chain_fails_closed_to_the_peer() -> None:
+    client = TestClient(
+        _fresh_app(
+            rate_limit=2, rate_window_seconds=60, trusted_proxies=f"{_PROXY_TRUSTED},10.0.0.5"
+        ),
+        client=(_PROXY_TRUSTED, 443),
+    )
+
+    assert _job(client, headers={"X-Forwarded-For": "10.0.0.5"}).status_code == 200
+    assert _job(client, headers={"X-Forwarded-For": "10.0.0.5"}).status_code == 200
+    assert _job(client, headers={"X-Forwarded-For": "10.0.0.5"}).status_code == 429
+
+
+def test_resolve_client_address_contract() -> None:
+    trust = frozenset({_PROXY_TRUSTED})
+    empty: frozenset[str] = frozenset()
+
+    # No anchor: the header is never read.
+    assert resolve_client_address("198.51.100.1", "203.0.113.1", empty) == "198.51.100.1"
+
+    # Untrusted peer: header ignored.
+    assert (
+        resolve_client_address("198.51.100.1", "203.0.113.1", trust) == "198.51.100.1"
+    )
+
+    # Trusted peer: one hop, two hops (rightmost untrusted wins), all-trusted
+    # chain, missing header, and malformed data all resolve predictably.
+    assert resolve_client_address(_PROXY_TRUSTED, _CLIENT_A, trust) == _CLIENT_A
+    assert (
+        resolve_client_address(_PROXY_TRUSTED, f"203.0.113.9, {_CLIENT_A}", trust)
+        == _CLIENT_A
+    )
+    assert (
+        resolve_client_address(
+            _PROXY_TRUSTED, f"{_PROXY_TRUSTED},10.0.0.5", frozenset({_PROXY_TRUSTED, "10.0.0.5"})
+        )
+        == _PROXY_TRUSTED
+    )
+    assert resolve_client_address(_PROXY_TRUSTED, None, trust) == _PROXY_TRUSTED
+    assert resolve_client_address(_PROXY_TRUSTED, "garbage", trust) == _PROXY_TRUSTED
+
+    # "unknown" (no socket peer) can never be a trusted hop.
+    assert resolve_client_address("unknown", _CLIENT_A, trust) == "unknown"
+
+    # IPv6 comparison is canonical on both sides.
+    ipv6_trust = frozenset({"2001:db8::1"})
+    assert resolve_client_address("2001:DB8::1", _CLIENT_A, ipv6_trust) == _CLIENT_A
+
+
+def test_trusted_proxies_configuration_parses_canonically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PASSORCH_TRUSTED_PROXIES", raising=False)
+    assert configured_trusted_proxies() == frozenset()
+
+    monkeypatch.setenv("PASSORCH_TRUSTED_PROXIES", "  ")
+    assert configured_trusted_proxies() == frozenset()
+
+    monkeypatch.setenv("PASSORCH_TRUSTED_PROXIES", f" 10.0.0.1 , {_PROXY_TRUSTED} ")
+    assert configured_trusted_proxies() == frozenset({"10.0.0.1", _PROXY_TRUSTED})
+
+    monkeypatch.setenv("PASSORCH_TRUSTED_PROXIES", "2001:DB8::1")
+    assert configured_trusted_proxies() == frozenset({"2001:db8::1"})
+
+    assert configured_trusted_proxies(["10.0.0.2", " 10.0.0.3 "]) == frozenset(
+        {"10.0.0.2", "10.0.0.3"}
+    )
+    assert configured_trusted_proxies("") == frozenset()
+    assert configured_trusted_proxies([]) == frozenset()
+
+
+def test_trusted_proxies_invalid_configuration_fails_fast_without_echoing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for bad in ("proxy.internal", "10.0.0.0/8", "unknown", "10.0.0.1,,10.0.0.2", "?!"):
+        with pytest.raises(ValueError) as error:
+            configured_trusted_proxies(bad)
+        assert str(error.value) == _TRUST_ERROR
+        assert bad not in str(error.value)
+
+    monkeypatch.setenv("PASSORCH_TRUSTED_PROXIES", "proxy.internal")
+    with pytest.raises(ValueError) as error:
+        create_app()
+    assert str(error.value) == _TRUST_ERROR
+    assert "proxy.internal" not in str(error.value)
+
+
+def test_explicit_trusted_proxies_win_over_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PASSORCH_TRUSTED_PROXIES", "10.0.0.1")
+
+    from_environment = create_app()
+    assert from_environment.state.trusted_proxies == frozenset({"10.0.0.1"})
+
+    explicit = create_app(trusted_proxies="10.0.0.9")
+    assert explicit.state.trusted_proxies == frozenset({"10.0.0.9"})
+
+
+def test_trust_anchor_does_not_relax_auth_or_body_caps() -> None:
+    """The anchor only picks the rate-limit key: authentication and the
+    body bound still apply to proxied traffic exactly as before."""
+
+    authed = TestClient(
+        _fresh_app(
+            rate_limit=5,
+            rate_window_seconds=60,
+            trusted_proxies=_PROXY_TRUSTED,
+            api_token="trusted-proxy-token",
+        ),
+        client=(_PROXY_TRUSTED, 443),
+    )
+    rejected = _job(authed, headers={"X-Forwarded-For": _CLIENT_A})
+    assert rejected.status_code == 401
+    assert rejected.headers["WWW-Authenticate"] == "Bearer"
+    allowed = _job(
+        authed,
+        headers={"X-Forwarded-For": _CLIENT_A, "Authorization": "Bearer trusted-proxy-token"},
+    )
+    assert allowed.status_code == 200
+
+    capped = TestClient(
+        _fresh_app(
+            max_body_bytes=100,
+            rate_limit=5,
+            trusted_proxies=_PROXY_TRUSTED,
+        ),
+        client=(_PROXY_TRUSTED, 443),
+    )
+    oversized = capped.post(
+        "/api/target-instances",
+        json={"name": "x" * 300, "target_type": "pdf-document"},
+        headers={"X-Forwarded-For": _CLIENT_A},
+    )
+    assert oversized.status_code == 413
 
 
 # --------------------------------------------------------------------------- #
@@ -355,3 +588,6 @@ def test_readme_documents_rate_limiting() -> None:
     assert "rate_limited" in readme
     assert "unsupported_transfer_encoding" in readme
     assert "Transfer-Encoding" in readme
+    assert "### Trusted proxies" in readme
+    assert "PASSORCH_TRUSTED_PROXIES" in readme
+    assert "fails closed" in readme

@@ -358,6 +358,101 @@ describe("instances - delete", () => {
   });
 });
 
+describe("instances - edit", () => {
+  it("opens a prefilled form for the mutable fields only", async () => {
+    showRoute("#/instances");
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Edit"));
+    await flush();
+    assert.match(root().textContent, /Edit target instance "Contract PDF"/);
+    assert.match(root().textContent, /Only the name and description can be changed/);
+    assert.equal(select("instance-edit-name").value, "Contract PDF");
+    assert.equal(select("instance-edit-description").value, "signed");
+    // no PATCH has been issued yet
+    assert.equal(env.calls.filter((c) => c.method === "PATCH").length, 0);
+  });
+
+  it("issues a PATCH with only the mutable fields and refreshes", async () => {
+    start({
+      "PATCH /api/target-instances/*": {
+        status: 200,
+        body: {
+          id: "33333333-3333-4333-8333-333333333333",
+          name: "Renamed PDF",
+          target_type: "pdf-document",
+          description: "signed v2",
+          created_at: 1700000005,
+        },
+      },
+    });
+    showRoute("#/instances");
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Edit"));
+    await flush();
+    type(select("instance-edit-name"), "Renamed PDF");
+    type(select("instance-edit-description"), "signed v2");
+    const before = env.calls.filter((c) => c.url.startsWith("/api/target-instances") && c.method === "GET").length;
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Save changes"));
+    await flush(14);
+
+    const patch = env.calls.find((c) => c.method === "PATCH");
+    assert.ok(patch, "the PATCH must be issued");
+    assert.equal(patch.url, "/api/target-instances/33333333-3333-4333-8333-333333333333");
+    assert.deepEqual(patch.body, { name: "Renamed PDF", description: "signed v2" });
+    assert.match(root().textContent, /Updated target instance "Renamed PDF"/);
+    const after = env.calls.filter((c) => c.url.startsWith("/api/target-instances") && c.method === "GET").length;
+    assert.ok(after > before, "the list must refresh after a successful update");
+  });
+
+  it("cancel returns to the list without patching", async () => {
+    showRoute("#/instances");
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Edit"));
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Cancel"));
+    await flush(10);
+    assert.equal(env.calls.filter((c) => c.method === "PATCH").length, 0);
+    assert.match(root().textContent, /Contract PDF/);
+  });
+
+  it("validates the bounds client-side and never issues the PATCH", async () => {
+    showRoute("#/instances");
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Edit"));
+    await flush();
+    type(select("instance-edit-name"), "   ");
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Save changes"));
+    await flush(10);
+    assert.equal(env.calls.filter((c) => c.method === "PATCH").length, 0);
+    assert.match(root().textContent, /Name is required/);
+  });
+
+  it("keeps the form and reports the error when the PATCH fails", async () => {
+    start({
+      "PATCH /api/target-instances/*": {
+        status: 422,
+        body: { detail: "name must be a non-empty string" },
+      },
+    });
+    showRoute("#/instances");
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Edit"));
+    await flush();
+    type(select("instance-edit-name"), "Renamed PDF");
+    const before = env.calls.filter((c) => c.url.startsWith("/api/target-instances") && c.method === "GET").length;
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Save changes"));
+    await flush(14);
+
+    const text = root().textContent;
+    assert.match(text, /name must be a non-empty string/);
+    assert.doesNotMatch(text, /Updated target instance/);
+    assert.match(text, /Edit target instance/, "the form must stay open for a retry");
+    assert.equal(select("instance-edit-name").value, "Renamed PDF");
+    const after = env.calls.filter((c) => c.url.startsWith("/api/target-instances") && c.method === "GET").length;
+    assert.equal(after, before, "a failed update must not refresh the list");
+  });
+});
+
 describe("instances - rendering and safety", () => {
   it("keeps the simulation-only notice in every state", async () => {
     for (const routes of [

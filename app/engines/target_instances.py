@@ -65,6 +65,14 @@ class DuplicateTargetInstanceError(TargetInstanceError):
     pass
 
 
+def _require_str(value: object, message: str) -> str:
+    """Narrow an untrusted value to ``str`` or raise (update path only)."""
+
+    if not isinstance(value, str):
+        raise InvalidTargetInstanceError(message)
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class TargetInstanceRecord:
     id: str
@@ -95,6 +103,19 @@ class TargetInstanceStore:
             raise InvalidTargetInstanceError(
                 f"instance id is not a canonical UUID: {instance.id!r}"
             )
+        self._validate_fields(instance)
+        with self._lock:
+            if instance.id in self._instances:
+                raise DuplicateTargetInstanceError(instance.id)
+            self._instances[instance.id] = instance
+            if len(self._instances) > self._capacity:
+                self._instances.popitem(last=False)
+        return instance
+
+    @staticmethod
+    def _validate_fields(instance: TargetInstanceRecord) -> None:
+        """Structural checks shared by ``put`` and ``update`` (no I/O, no locks)."""
+
         if not isinstance(instance.name, str) or not instance.name.strip():
             raise InvalidTargetInstanceError("name must be a non-empty string")
         if len(instance.name) > MAX_NAME_LENGTH:
@@ -112,13 +133,64 @@ class TargetInstanceStore:
         if not isinstance(instance.created_at, int) or isinstance(instance.created_at, bool):
             raise InvalidTargetInstanceError("created_at must be an integer")
 
+    def _updated_record(
+        self,
+        existing: TargetInstanceRecord,
+        name: object,
+        description: object,
+    ) -> TargetInstanceRecord:
+        """The validated replacement record for a mutable-field update.
+
+        ``None`` means "leave unchanged"; the immutable fields (``id``,
+        ``target_type``, ``created_at``) are always carried over from
+        ``existing``.  Invalid replacement values raise
+        :class:`InvalidTargetInstanceError` before anything is changed.
+        """
+
+        candidate = TargetInstanceRecord(
+            id=existing.id,
+            name=(
+                existing.name
+                if name is None
+                else _require_str(name, "name must be a non-empty string")
+            ),
+            target_type=existing.target_type,
+            description=(
+                existing.description
+                if description is None
+                else _require_str(description, "description must be a string")
+            ),
+            created_at=existing.created_at,
+        )
+        self._validate_fields(candidate)
+        return candidate
+
+    def update(
+        self,
+        instance_id: object,
+        *,
+        name: object = None,
+        description: object = None,
+    ) -> TargetInstanceRecord | None:
+        """Replace the mutable fields of a stored record in place.
+
+        Only ``name`` and ``description`` are mutable; ``id``,
+        ``target_type`` and ``created_at`` are immutable and the record
+        keeps its position in insertion order (no FIFO eviction runs for
+        an update).  Malformed or unknown identifiers answer ``None``
+        identically, like :meth:`get`; invalid replacement values raise
+        :class:`InvalidTargetInstanceError` before anything is changed.
+        """
+
+        if not isinstance(instance_id, str) or not _UUID_RE.fullmatch(instance_id):
+            return None
         with self._lock:
-            if instance.id in self._instances:
-                raise DuplicateTargetInstanceError(instance.id)
-            self._instances[instance.id] = instance
-            if len(self._instances) > self._capacity:
-                self._instances.popitem(last=False)
-        return instance
+            existing = self._instances.get(instance_id)
+            if existing is None:
+                return None
+            candidate = self._updated_record(existing, name, description)
+            self._instances[instance_id] = candidate
+            return candidate
 
     def get(self, instance_id: object) -> TargetInstanceRecord | None:
         if not isinstance(instance_id, str) or not _UUID_RE.fullmatch(instance_id):
