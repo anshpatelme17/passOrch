@@ -11,7 +11,8 @@
  *   GET    /api/targets           (target-type options)
  *   GET    /api/target-instances  (optional association options)
  *   POST   /api/jobs              (create: JobCreateRequest)
- *   GET    /api/jobs              (JobSummary list)
+ *   GET    /api/jobs              (JobSummary list; status/target/instance_id
+ *                                  filters, sort, limit/offset pagination)
  *   GET    /api/jobs/{job_id}     (JobInfo detail)
  *
  * Verified schemas:
@@ -56,8 +57,21 @@ let listSlot = null;
 let formSlot = null;
 let formResultSlot = null;
 let detailSlot = null;
+let filterSlot = null;
 let detailSelectedJobId = "";
-let paginationState = { limit: 50, offset: 0, total: 0, statusFilter: "", targetFilter: "" };
+/**
+ * Pagination + filtering for the list. `instanceFilter` is `""` (all),
+ * `"none"` (jobs recorded with no instance) or a concrete instance id.
+ */
+let paginationState = {
+  limit: 50,
+  offset: 0,
+  total: 0,
+  statusFilter: "",
+  targetFilter: "",
+  instanceFilter: "",
+  sort: "created_desc",
+};
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -67,6 +81,15 @@ function asArray(value) {
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
+}
+
+/** True when any list filter narrows the result set. */
+function hasActiveFilters() {
+  return Boolean(
+    paginationState.statusFilter ||
+    paginationState.targetFilter ||
+    paginationState.instanceFilter
+  );
 }
 
 async function loadTargetOptions() {
@@ -90,6 +113,110 @@ async function loadInstanceOptions() {
 /** Instances whose target_type matches `targetType`. */
 function compatibleInstances(targetType) {
   return targetInstances.filter((i) => i.target_type === targetType);
+}
+
+/* ---- list filters --------------------------------------------------------- */
+
+function filterSelect(id, label, value, options, onChange) {
+  const select = h("select", {
+    class: "field__control",
+    attrs: [["id", id], ["name", id]],
+    onChange,
+    children: options.map((opt) =>
+      h("option", {
+        text: opt.label,
+        attrs:
+          opt.value === value
+            ? [["value", opt.value], ["selected", ""]]
+            : [["value", opt.value]],
+      })
+    ),
+  });
+  return h("div", {
+    class: "filters__group",
+    children: [
+      h("label", { class: "field__label", text: label, attrs: [["for", id]] }),
+      select,
+    ],
+  });
+}
+
+function renderFilters() {
+  if (!filterSlot) {
+    return;
+  }
+  const statuses = ["simulated", "denied", "failed"];
+  const statusOptions = [{ label: "All statuses", value: "" }].concat(
+    statuses.map((s) => ({ label: s, value: s }))
+  );
+  const targetOptions = [{ label: "All targets", value: "" }].concat(
+    targetTypes.map((t) => ({ label: t.target, value: t.target }))
+  );
+  const instanceOptions = [
+    { label: "All jobs", value: "" },
+    { label: "No instance", value: "none" },
+  ].concat(
+    targetInstances.map((i) => ({
+      label: (i.name || i.id) + " (" + i.target_type + ")",
+      value: i.id,
+    }))
+  );
+  const sortOptions = [
+    { label: "Newest first", value: "created_desc" },
+    { label: "Oldest first", value: "created_asc" },
+  ];
+
+  render(filterSlot, [
+    h("div", {
+      class: "filters",
+      children: [
+        filterSelect(
+          "jobs-filter-status",
+          "Status",
+          paginationState.statusFilter,
+          statusOptions,
+          (event) => {
+            paginationState.statusFilter = event.target.value;
+            paginationState.offset = 0;
+            renderList();
+          }
+        ),
+        filterSelect(
+          "jobs-filter-target",
+          "Target",
+          paginationState.targetFilter,
+          targetOptions,
+          (event) => {
+            paginationState.targetFilter = event.target.value;
+            paginationState.offset = 0;
+            renderList();
+          }
+        ),
+        filterSelect(
+          "jobs-filter-instance",
+          "Instance",
+          paginationState.instanceFilter,
+          instanceOptions,
+          (event) => {
+            paginationState.instanceFilter = event.target.value;
+            paginationState.offset = 0;
+            renderList();
+          }
+        ),
+        filterSelect(
+          "jobs-filter-sort",
+          "Sort",
+          paginationState.sort,
+          sortOptions,
+          (event) => {
+            paginationState.sort = event.target.value || "created_desc";
+            paginationState.offset = 0;
+            renderList();
+          }
+        ),
+      ],
+    }),
+  ]);
 }
 
 /* ---- form ----------------------------------------------------------------- */
@@ -259,6 +386,9 @@ function renderForm() {
 
 /* ---- create --------------------------------------------------------------- */
 
+/** Guards the create form against double-submission while a request is pending. */
+let submittingJob = false;
+
 async function submitJob() {
   const target = formState.target;
   if (!isNonEmptyString(target)) {
@@ -271,42 +401,49 @@ async function submitJob() {
     ]);
     return;
   }
-
-  // Exactly the JobCreateRequest keys: target required, the rest optional.
-  // An omitted instance_id is not sent at all rather than sent as "".
-  const payload = { target: target };
-  if (isNonEmptyString(formState.instance_id)) {
-    payload.instance_id = formState.instance_id;
-  }
-  payload.mode = formState.mode || "simulated";
-  payload.reference = formState.reference || "";
-
-  render(formResultSlot, [pending("Creating simulated job...")]);
-  const res = await api.post("/api/jobs", payload);
-
-  if (!res.ok) {
-    // Domain errors (unknown_target, target_instance_not_found,
-    // target_instance_type_mismatch) and Pydantic validation errors are both
-    // already normalised to a single message by js/api.js.
-    render(formResultSlot, [
-      InlineError(res.error),
-      RetryButton(submitJob, "Retry creating job"),
-    ]);
+  if (submittingJob) {
     return;
   }
+  submittingJob = true;
+  try {
+    // Exactly the JobCreateRequest keys: target required, the rest optional.
+    // An omitted instance_id is not sent at all rather than sent as "".
+    const payload = { target: target };
+    if (isNonEmptyString(formState.instance_id)) {
+      payload.instance_id = formState.instance_id;
+    }
+    payload.mode = formState.mode || "simulated";
+    payload.reference = formState.reference || "";
 
-  const job = res.data;
-  if (job === null || typeof job !== "object" || !isNonEmptyString(job.job_id)) {
-    render(formResultSlot, [
-      empty("No job returned", "The API answered without a usable job record."),
-    ]);
-    return;
+    render(formResultSlot, [pending("Creating simulated job...")]);
+    const res = await api.post("/api/jobs", payload);
+
+    if (!res.ok) {
+      // Domain errors (unknown_target, target_instance_not_found,
+      // target_instance_type_mismatch) and Pydantic validation errors are both
+      // already normalised to a single message by js/api.js.
+      render(formResultSlot, [
+        InlineError(res.error),
+        RetryButton(submitJob, "Retry creating job"),
+      ]);
+      return;
+    }
+
+    const job = res.data;
+    if (job === null || typeof job !== "object" || !isNonEmptyString(job.job_id)) {
+      render(formResultSlot, [
+        empty("No job returned", "The API answered without a usable job record."),
+      ]);
+      return;
+    }
+
+    render(formResultSlot, [createdSummary(job)]);
+    // Refresh the list, then re-open the new job's detail so it is not lost.
+    await renderList();
+    await renderDetail(job.job_id);
+  } finally {
+    submittingJob = false;
   }
-
-  render(formResultSlot, [createdSummary(job)]);
-  // Refresh the list, then re-open the new job's detail so it is not lost.
-  await renderList();
-  await renderDetail(job.job_id);
 }
 
 /**
@@ -352,6 +489,13 @@ async function renderList() {
   const params = new URLSearchParams();
   if (paginationState.statusFilter) params.set("status", paginationState.statusFilter);
   if (paginationState.targetFilter) params.set("target", paginationState.targetFilter);
+  if (paginationState.instanceFilter === "none") {
+    // An explicit empty instance_id matches jobs with no association.
+    params.set("instance_id", "");
+  } else if (paginationState.instanceFilter) {
+    params.set("instance_id", paginationState.instanceFilter);
+  }
+  params.set("sort", paginationState.sort || "created_desc");
   params.set("limit", String(paginationState.limit));
   params.set("offset", String(paginationState.offset));
   const qs = params.toString();
@@ -367,7 +511,14 @@ async function renderList() {
   paginationState.total = total;
 
   if (jobs.length === 0 && paginationState.offset === 0) {
-    render(listSlot, [empty("No jobs recorded yet", "Create a simulated job with the form above.")]);
+    render(listSlot, [
+      hasActiveFilters()
+        ? empty(
+            "No jobs match your filters",
+            "Adjust or clear the filters above to see recorded jobs again."
+          )
+        : empty("No jobs recorded yet", "Create a simulated job with the form above."),
+    ]);
     return;
   }
   if (jobs.length === 0) {
@@ -532,8 +683,18 @@ async function renderJobs(root) {
   formSlot = h("div", { class: "section-body" });
   formResultSlot = h("div", { class: "section-body" });
   detailSlot = h("div", { class: "section-body" });
+  filterSlot = h("div", { class: "section-body" });
 
   formState = { target: "", mode: "simulated", reference: "", instance_id: "" };
+  paginationState = {
+    limit: 50,
+    offset: 0,
+    total: 0,
+    statusFilter: "",
+    targetFilter: "",
+    instanceFilter: "",
+    sort: "created_desc",
+  };
 
   render(root, [
     SimulationNotice(),
@@ -542,7 +703,7 @@ async function renderJobs(root) {
       [h("div", { class: "section-body" }), formSlot, formResultSlot],
       "Each job records what the policy authorised - and only ever a simulation."
     ),
-    Panel("Jobs", listSlot, "Latest first. Details are loaded per job."),
+    Panel("Jobs", [filterSlot, listSlot], "Latest first. Details are loaded per job."),
     Panel("Job details", detailSlot),
     Panel(
       "Simulation only",
@@ -557,6 +718,7 @@ async function renderJobs(root) {
   ]);
 
   await Promise.all([loadTargetOptions(), loadInstanceOptions()]);
+  renderFilters();
   renderForm();
   await renderList();
   render(detailSlot, [

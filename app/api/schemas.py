@@ -8,7 +8,7 @@ plan steps and simulation outcomes.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "AuthorizationInfo",
@@ -44,10 +44,14 @@ class PlanPreviewRequest(_Strict):
     ``mode`` is a free string so an unsupported value (for example ``"real"``)
     reaches the execution policy and is answered with a structured denial
     rather than a transport-level error.
+
+    ``reference`` is capped at 256 characters, matching the frontend inputs
+    that mirror it; the bound keeps the stored label from becoming an
+    unbounded string on an otherwise fully-validated surface.
     """
 
     mode: str = "simulated"
-    reference: str = ""
+    reference: str = Field(default="", max_length=256)
 
 
 class JobCreateRequest(_Strict):
@@ -67,12 +71,15 @@ class JobCreateRequest(_Strict):
     :class:`PlanPreviewRequest`: an unsupported value (for example ``"real"``)
     must reach :class:`~app.engines.execution_policy.ExecutionPolicy` and be
     answered with a structured denial, not a transport error.
+
+    ``reference`` is capped at 256 characters, matching the frontend input
+    that mirrors it.
     """
 
     target: str
     instance_id: str | None = None
     mode: str = "simulated"
-    reference: str = ""
+    reference: str = Field(default="", max_length=256)
 
 
 class SelectionInfo(BaseModel):

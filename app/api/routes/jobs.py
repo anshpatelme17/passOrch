@@ -1,14 +1,22 @@
-"""Phase 2D/3B.3/3D - jobs API routes (read-only + create).
+"""Phase 2D/3B.3/3D/7B/7C/8A - jobs API routes (read-only + create).
 
 Endpoints:
-* ``POST /api/jobs`` - create and record a terminal job (or denial/failure)
-* ``GET  /api/jobs`` - list stored jobs in newest-first order
+* ``POST /api/jobs`` - create and record a terminal job (or denial/failure);
+  answers 503 with a generic structured detail when persistent job storage
+  is configured but the write fails (Phase 8A)
+* ``GET  /api/jobs`` - list stored jobs with optional ``status`` / ``target`` /
+  ``instance_id`` filters, ``sort`` (``created_desc`` default, ``created_asc``)
+  and ``limit`` / ``offset`` pagination; newest-first by default
 * ``GET  /api/jobs/{job_id}`` - fetch one recorded job (404 if not found)
+* ``DELETE /api/jobs/{job_id}`` - delete a recorded job (204/404; 503 on a
+  failed persistence write)
 
 All routes remain simulation-only, reuse the existing orchestrator and
 Phase 3B.1 store, never trigger discovery/refresh, and never leak raw
 discovery output or command fields. Malformed and unknown IDs return the
-same ``job_not_found`` contract.
+same ``job_not_found`` contract. Reads are served from the in-memory store
+and never touch the database; a ``JobPersistenceError`` from a write is
+translated here into HTTP 503 with no SQL text, path or driver message.
 
 Phase 3D: ``POST /api/jobs`` requires an explicit ``target`` selected by the
 caller and validated against the read-only ``TARGET_FORMAT_POLICY`` map. An
@@ -26,6 +34,7 @@ from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_
 from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
 from app.engines.discovery.registry import DiscoveryRegistry
 from app.engines.execution_policy import ExecutionPolicy
+from app.engines.job_persistence import JobPersistenceError
 from app.engines.jobs import AuditJob, JobStore, default_job_store
 from app.engines.target_instances import (
     TargetInstanceStore,
@@ -46,6 +55,9 @@ INSTANCE_NOT_FOUND_ERROR = "target_instance_not_found"
 #: requested ``target``.  Both values are echoed so a client can show which
 #: of the two is wrong without a second round-trip.
 INSTANCE_TYPE_MISMATCH_ERROR = "target_instance_type_mismatch"
+
+#: Stable machine-readable code for a failed job-storage write (Phase 8A).
+PERSISTENCE_ERROR = "persistence_unavailable"
 
 #: Stable, structured detail for a target that is not in ``TARGET_FORMAT_POLICY``.
 #: ``supported_targets`` mirrors the read-only catalog exposed by
@@ -95,6 +107,22 @@ def instance_type_mismatch_detail(target: str, instance_target_type: str) -> dic
         "detail": "target instance target_type does not match the requested target",
         "target": target,
         "instance_target_type": instance_target_type,
+    }
+
+
+def persistence_unavailable_detail(subject: str = "job") -> dict[str, str]:
+    """Structured 503 detail for a failed persistence write (Phases 8A/8B).
+
+    Rebuilt per call like the other detail helpers and deliberately
+    generic: SQL text, file paths and database-driver messages stay
+    chained on the server-side exception and never reach an API response.
+    ``subject`` names the store (``"job"``, ``"target instance"``) so each
+    endpoint's message describes the store it actually uses.
+    """
+
+    return {
+        "error": PERSISTENCE_ERROR,
+        "detail": f"{subject} storage is temporarily unavailable",
     }
 
 
@@ -153,6 +181,10 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
     application's store whose ``target_type`` equals ``target``. The resolved
     pair is snapshotted onto the job and never re-resolved, so a failure here
     stores nothing and a later instance deletion cannot unread a job.
+
+    When a persistent job database is configured and the mirrored write
+    fails, the job was not stored: the response is a structured 503 with no
+    database detail (Phase 8A).
     """
 
     if body.target not in TARGET_FORMAT_POLICY:
@@ -180,18 +212,31 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
             )
         instance_target_type = instance.target_type
 
-    job = create_job(
-        body.target,
-        discovery_registry=_resolve_discovery_registry(request),
-        adapter_registry=_resolve_adapter_registry(request),
-        policy=_resolve_policy(request),
-        mode=body.mode,
-        reference=body.reference,
-        instance_id=instance_id,
-        instance_target_type=instance_target_type,
-        store=_resolve_job_store(request),
-    )
+    try:
+        job = create_job(
+            body.target,
+            discovery_registry=_resolve_discovery_registry(request),
+            adapter_registry=_resolve_adapter_registry(request),
+            policy=_resolve_policy(request),
+            mode=body.mode,
+            reference=body.reference,
+            instance_id=instance_id,
+            instance_target_type=instance_target_type,
+            store=_resolve_job_store(request),
+        )
+    except JobPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail(),
+        ) from exc
     return JobInfo(**job.as_dict())
+
+
+#: Accepted ``sort`` modes for ``GET /api/jobs``.  ``created_desc`` (the
+#: default) is exactly the store's documented newest-first order;
+#: ``created_asc`` is its exact reversal, so both directions are deterministic
+#: even when several jobs share a ``created_at`` second.
+JOB_SORT_MODES: tuple[str, ...] = ("created_desc", "created_asc")
 
 
 @router.get("", response_model=JobPageResponse)
@@ -199,15 +244,29 @@ def list_jobs(
     request: Request,
     status: str | None = None,
     target: str | None = None,
+    instance_id: str | None = None,
+    sort: str = "created_desc",
     limit: int = 50,
     offset: int = 0,
 ) -> JobPageResponse:
-    """List stored jobs, newest-first, with optional filtering and pagination."""
+    """List stored jobs with optional filtering, sorting and pagination.
+
+    Filters (``status``, ``target``, ``instance_id``) are plain value matches
+    applied **before** pagination: ``total`` always counts the filtered result
+    set, and an unknown value simply yields an empty page (HTTP 200). An empty
+    ``instance_id=`` matches jobs recorded with no instance association.
+    ``sort`` is a mode, not a filter, so an unrecognised value is a 422.
+    """
 
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
     if offset < 0:
         raise HTTPException(status_code=422, detail="offset must be non-negative")
+    if sort not in JOB_SORT_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail="sort must be one of: " + ", ".join(JOB_SORT_MODES),
+        )
 
     store = _resolve_job_store(request)
     jobs: list[AuditJob] = list(store.list())
@@ -216,6 +275,11 @@ def list_jobs(
         jobs = [j for j in jobs if j.status.value == status]
     if target is not None:
         jobs = [j for j in jobs if j.target == target]
+    if instance_id is not None:
+        jobs = [j for j in jobs if j.instance_id == instance_id]
+
+    if sort == "created_asc":
+        jobs.reverse()
 
     total = len(jobs)
     paginated = jobs[offset : offset + limit]
@@ -283,9 +347,21 @@ def detail(job_id: str, request: Request) -> JobInfo:
 
 @router.delete("/{job_id}")
 def delete_job(job_id: str, request: Request) -> Response:
-    """Delete a recorded job; 204 on success, 404 for malformed or unknown IDs."""
+    """Delete a recorded job; 204 on success, 404 for malformed or unknown IDs.
+
+    With persistent storage configured, a failed database delete answers 503
+    and the job stays stored (memory is only cleared after the database
+    write succeeds).
+    """
 
     store = _resolve_job_store(request)
-    if not store.delete(job_id):
+    try:
+        deleted = store.delete(job_id)
+    except JobPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail(),
+        ) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="job_not_found")
     return Response(status_code=204)

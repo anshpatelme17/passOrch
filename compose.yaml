@@ -1,0 +1,48 @@
+# PassOrch - single-service Compose configuration.
+#
+# One application container; no database server, cache, or other
+# service (SQLite lives on the named volume below).  The port is
+# published on 127.0.0.1 only - the app itself speaks plain HTTP with no
+# TLS or proxy in front, so keep it loopback-bound (see README
+# "Deployment" for what remote exposure would additionally require).
+#
+#   docker compose up -d --build     # build and start
+#   docker compose down              # stop and remove the container
+#                                    # (the named volume - and the
+#                                    # database - survives)
+#   docker compose down -v           # ALSO delete the stored data
+#
+# Secrets (e.g. PASSORCH_API_TOKEN) go in a local .env file (already
+# git-ignored); see .env.example.  Never put real values here.
+
+services:
+  passorch:
+    build: .
+    image: passorch:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Both the job store and the target-instance store share this one
+      # database file, on the persistent volume.
+      PASSORCH_JOB_DB: /data/passorch.db
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - passorch-data:/data
+    # Runtime hardening: the image already runs as a non-root user with
+    # only the stdlib - this layers defence in depth.  The root filesystem
+    # is read-only (the database lives on the named volume; /tmp is a
+    # tmpfs), all Linux capabilities are dropped, and privilege escalation
+    # inside the container is disabled.  The app needs no writes anywhere
+    # else, so a violation fails visibly instead of silently.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  passorch-data:

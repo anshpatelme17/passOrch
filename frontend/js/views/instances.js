@@ -6,7 +6,9 @@
  * the list is refreshed only after a *successful* mutation - never on failure.
  *
  * Endpoints used - nothing else is called from this module:
- *   GET    /api/target-instances       -> {instances: [...], count}
+ *   GET    /api/target-instances       -> {instances: [...], count, total, ...}
+ *                                          (optional target_type / name filters,
+ *                                          limit / offset pagination)
  *   POST   /api/target-instances       -> 201 TargetInstance
  *   DELETE /api/target-instances/{id}  -> 204 No Content (empty body)
  *   GET    /api/target-instances/{id}  -> 200 TargetInstance (detail row)
@@ -59,7 +61,15 @@ let formState = { name: "", target_type: "", description: "" };
 let listSlot = null;
 let formSlot = null;
 let feedbackSlot = null;
-let paginationState = { limit: 50, offset: 0, total: 0 };
+let filterSlot = null;
+/** `targetTypeFilter` is an exact target type; `nameFilter` a substring. */
+let paginationState = {
+  limit: 50,
+  offset: 0,
+  total: 0,
+  targetTypeFilter: "",
+  nameFilter: "",
+};
 
 /* ---- helpers -------------------------------------------------------------- */
 
@@ -121,6 +131,97 @@ function renderFeedback(kind, message) {
   ]);
 }
 
+/* ---- list filters --------------------------------------------------------- */
+
+function renderFilters() {
+  if (!filterSlot) {
+    return;
+  }
+  const typeNodes = [h("option", { text: "All types", attrs: [["value", ""]] })];
+  for (const option of targetTypes) {
+    const isSelected = option.target === paginationState.targetTypeFilter;
+    typeNodes.push(
+      h("option", {
+        text: option.target,
+        attrs: isSelected
+          ? [["value", option.target], ["selected", ""]]
+          : [["value", option.target]],
+      })
+    );
+  }
+  const typeSelect = h("select", {
+    class: "field__control",
+    attrs: [["id", "instances-filter-type"], ["name", "target_type"]],
+    onChange: (event) => {
+      paginationState.targetTypeFilter = event.target.value;
+      paginationState.offset = 0;
+      renderList();
+    },
+    children: typeNodes,
+  });
+
+  const nameInput = h("input", {
+    class: "field__control",
+    attrs: [
+      ["id", "instances-filter-name"],
+      ["name", "name"],
+      ["maxlength", String(MAX_NAME_LENGTH)],
+    ],
+  });
+  nameInput.value = paginationState.nameFilter || "";
+
+  render(filterSlot, [
+    h("div", {
+      class: "filters",
+      children: [
+        h("div", {
+          class: "filters__group",
+          children: [
+            h("label", {
+              class: "field__label",
+              text: "Target type",
+              attrs: [["for", "instances-filter-type"]],
+            }),
+            typeSelect,
+          ],
+        }),
+        h("div", {
+          class: "filters__group",
+          children: [
+            h("label", {
+              class: "field__label",
+              text: "Name contains",
+              attrs: [["for", "instances-filter-name"]],
+            }),
+            nameInput,
+          ],
+        }),
+        h("div", {
+          class: "filters__group",
+          children: [
+            button(
+              "Apply filters",
+              () => {
+                paginationState.nameFilter = nameInput.value || "";
+                paginationState.offset = 0;
+                renderList();
+              },
+              "btn btn--primary"
+            ),
+            button("Clear", () => {
+              paginationState.nameFilter = "";
+              paginationState.targetTypeFilter = "";
+              paginationState.offset = 0;
+              renderFilters();
+              renderList();
+            }, "btn"),
+          ],
+        }),
+      ],
+    }),
+  ]);
+}
+
 /* ---- list ----------------------------------------------------------------- */
 
 async function renderList() {
@@ -129,6 +230,12 @@ async function renderList() {
   }
   render(listSlot, pending("Loading target instances..."));
   const params = new URLSearchParams();
+  if (paginationState.targetTypeFilter) {
+    params.set("target_type", paginationState.targetTypeFilter);
+  }
+  if (paginationState.nameFilter) {
+    params.set("name", paginationState.nameFilter);
+  }
   params.set("limit", String(paginationState.limit));
   params.set("offset", String(paginationState.offset));
   const qs = params.toString();
@@ -144,11 +251,17 @@ async function renderList() {
   paginationState.total = total;
 
   if (instances.length === 0 && paginationState.offset === 0) {
+    const filtered = Boolean(paginationState.targetTypeFilter || paginationState.nameFilter);
     render(listSlot, [
-      empty(
-        "No target instances yet",
-        "Create one below to give a specific thing a name that simulated jobs can be associated with."
-      ),
+      filtered
+        ? empty(
+            "No target instances match your filters",
+            "Adjust or clear the filters above to see instances again."
+          )
+        : empty(
+            "No target instances yet",
+            "Create one below to give a specific thing a name that simulated jobs can be associated with."
+          ),
     ]);
     return;
   }
@@ -343,6 +456,9 @@ function renderForm() {
   render(formSlot, [grid]);
 }
 
+/** Guards the create form against double-submission while a request is pending. */
+let submittingInstance = false;
+
 async function submitForm() {
   const problems = validateForm(formState);
   if (problems.length > 0) {
@@ -352,28 +468,36 @@ async function submitForm() {
     );
     return;
   }
-  // Copy so a failure leaves the form untouched for a retry.
-  const payload = {
-    name: formState.name,
-    target_type: formState.target_type,
-    description: formState.description || "",
-  };
-  renderFeedback(null, "");
-  render(formSlot, [pending("Creating target instance...")]);
-  const res = await api.post("/api/target-instances", payload);
-  if (!res.ok) {
-    // Surface the API's own message (already normalised by js/api.js) and keep
-    // the entered values so the user can correct and resubmit.
-    renderFeedback("error", res.error.message);
-    renderForm();
+  if (submittingInstance) {
     return;
   }
-  const name = res.data && typeof res.data.name === "string" ? res.data.name : payload.name;
-  renderFeedback("success", `Created target instance "${name}".`);
-  // Clear only after a successful create, then refresh the list.
-  formState = { name: "", target_type: "", description: "" };
-  renderForm();
-  renderList();
+  submittingInstance = true;
+  try {
+    // Copy so a failure leaves the form untouched for a retry.
+    const payload = {
+      name: formState.name,
+      target_type: formState.target_type,
+      description: formState.description || "",
+    };
+    renderFeedback(null, "");
+    render(formSlot, [pending("Creating target instance...")]);
+    const res = await api.post("/api/target-instances", payload);
+    if (!res.ok) {
+      // Surface the API's own message (already normalised by js/api.js) and keep
+      // the entered values so the user can correct and resubmit.
+      renderFeedback("error", res.error.message);
+      renderForm();
+      return;
+    }
+    const name = res.data && typeof res.data.name === "string" ? res.data.name : payload.name;
+    renderFeedback("success", `Created target instance "${name}".`);
+    // Clear only after a successful create, then refresh the list.
+    formState = { name: "", target_type: "", description: "" };
+    renderForm();
+    renderList();
+  } finally {
+    submittingInstance = false;
+  }
 }
 
 /* ---- delete --------------------------------------------------------------- */
@@ -420,28 +544,39 @@ function confirmAndDelete(instance) {
   ]);
 }
 
+/** Guards delete against a second click while a request is pending. */
+let deletingInstanceId = "";
+
 async function processDelete(instanceId, label) {
   const slot = listSlot;
   if (!slot) {
     return;
   }
-  render(slot, [pending(`Deleting target instance "${label}"...`)]);
-  // The shared client treats 204 (no body) as a success with data === null.
-  const res = await api.delete(`/api/target-instances/${instanceId}`);
-  if (!res.ok) {
-    render(slot, [
-      InlineError(res.error),
-      RetryButton(renderList),
-      h("p", {
-        class: "panel__hint",
-        text: "The target instance was not deleted.",
-      }),
-    ]);
+  if (deletingInstanceId) {
     return;
   }
-  renderFeedback("success", `Deleted target instance "${label}".`);
-  // Refresh only after a successful delete.
-  renderList();
+  deletingInstanceId = instanceId;
+  render(slot, [pending(`Deleting target instance "${label}"...`)]);
+  try {
+    // The shared client treats 204 (no body) as a success with data === null.
+    const res = await api.delete(`/api/target-instances/${instanceId}`);
+    if (!res.ok) {
+      render(slot, [
+        InlineError(res.error),
+        RetryButton(renderList),
+        h("p", {
+          class: "panel__hint",
+          text: "The target instance was not deleted.",
+        }),
+      ]);
+      return;
+    }
+    renderFeedback("success", `Deleted target instance "${label}".`);
+    // Refresh only after a successful delete.
+    renderList();
+  } finally {
+    deletingInstanceId = "";
+  }
 }
 
 /* ---- view ----------------------------------------------------------------- */
@@ -450,8 +585,16 @@ async function renderInstances(root) {
   listSlot = h("div", { class: "section-body" });
   formSlot = h("div", { class: "section-body" });
   feedbackSlot = h("div", { class: "section-body" });
+  filterSlot = h("div", { class: "section-body" });
   // Reset the form on every entry so values never leak across navigations.
   formState = { name: "", target_type: "", description: "" };
+  paginationState = {
+    limit: 50,
+    offset: 0,
+    total: 0,
+    targetTypeFilter: "",
+    nameFilter: "",
+  };
 
   render(root, [
     SimulationNotice(),
@@ -464,6 +607,7 @@ async function renderInstances(root) {
           text:
             "A target instance is a named thing to audit. Simulated jobs can be associated with one, and the association is a snapshot taken when the job is created.",
         }),
+        filterSlot,
         listSlot,
       ],
       "Create, inspect and remove target instances."
@@ -484,6 +628,7 @@ async function renderInstances(root) {
   // Load the type options first so the form can render a populated picker, then
   // render the form and the list. Both failures are independent.
   await loadTargetTypes();
+  renderFilters();
   renderForm();
   renderList();
 }

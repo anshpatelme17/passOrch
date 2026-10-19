@@ -833,3 +833,167 @@ def test_api_endpoints_never_execute_or_discover():
         assert calls == []
     finally:
         runner_module.run_safe_command = original  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Target-instance filtering (Phase 7D)
+# ---------------------------------------------------------------------------
+
+
+def _filtered_client():
+    ti_store = TargetInstanceStore(capacity=10)
+    app = create_app(target_instance_store=ti_store)
+    return TestClient(app), ti_store
+
+
+def test_ti_filter_by_target_type():
+    client, _ = _filtered_client()
+    client.post("/api/target-instances", json={"name": "a", "target_type": "pdf-document"})
+    client.post("/api/target-instances", json={"name": "b", "target_type": "zip-archive"})
+    client.post("/api/target-instances", json={"name": "c", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?target_type=pdf-document")
+    body = res.json()
+    assert res.status_code == 200
+    assert body["total"] == 2
+    assert body["count"] == 2
+    assert all(i["target_type"] == "pdf-document" for i in body["instances"])
+
+
+def test_ti_filter_by_name_substring_is_case_insensitive():
+    client, _ = _filtered_client()
+    client.post("/api/target-instances", json={"name": "Alpha Server", "target_type": "pdf-document"})
+    client.post("/api/target-instances", json={"name": "beta node", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?name=ALPHA")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["instances"][0]["name"] == "Alpha Server"
+
+
+def test_ti_filter_no_match_returns_empty_page_not_error():
+    client, _ = _filtered_client()
+    client.post("/api/target-instances", json={"name": "a", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?target_type=not-a-real-type")
+    body = res.json()
+    assert res.status_code == 200
+    assert body["total"] == 0
+    assert body["count"] == 0
+    assert body["instances"] == []
+
+
+def test_ti_filter_by_target_type_and_name():
+    client, _ = _filtered_client()
+    client.post("/api/target-instances", json={"name": "Alpha", "target_type": "pdf-document"})
+    client.post("/api/target-instances", json={"name": "Alpha", "target_type": "zip-archive"})
+    client.post("/api/target-instances", json={"name": "Beta", "target_type": "pdf-document"})
+
+    res = client.get("/api/target-instances?target_type=pdf-document&name=alpha")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["instances"][0]["name"] == "Alpha"
+    assert body["instances"][0]["target_type"] == "pdf-document"
+
+
+def test_ti_filters_apply_before_pagination():
+    client, _ = _filtered_client()
+    for i in range(5):
+        client.post(
+            "/api/target-instances",
+            json={"name": f"pdf-{i}", "target_type": "pdf-document"},
+        )
+    for i in range(2):
+        client.post(
+            "/api/target-instances",
+            json={"name": f"zip-{i}", "target_type": "zip-archive"},
+        )
+
+    res = client.get("/api/target-instances?target_type=pdf-document&limit=2")
+    body = res.json()
+    assert body["total"] == 5
+    assert body["count"] == 2
+    assert body["limit"] == 2
+
+
+def test_ti_filtered_pagination_middle_and_final_page():
+    client, _ = _filtered_client()
+    for i in range(5):
+        client.post(
+            "/api/target-instances",
+            json={"name": f"pdf-{i}", "target_type": "pdf-document"},
+        )
+    client.post("/api/target-instances", json={"name": "zip", "target_type": "zip-archive"})
+
+    page2 = client.get("/api/target-instances?target_type=pdf-document&limit=2&offset=2").json()
+    assert page2["total"] == 5
+    assert page2["count"] == 2
+    assert page2["offset"] == 2
+
+    page3 = client.get("/api/target-instances?target_type=pdf-document&limit=2&offset=4").json()
+    assert page3["total"] == 5
+    assert page3["count"] == 1
+
+
+def test_ti_empty_name_filter_matches_everything():
+    client, _ = _filtered_client()
+    client.post("/api/target-instances", json={"name": "a", "target_type": "pdf-document"})
+    client.post("/api/target-instances", json={"name": "b", "target_type": "zip-archive"})
+
+    res = client.get("/api/target-instances?name=")
+    assert res.json()["total"] == 2
+
+
+def test_ti_filters_preserve_insertion_order():
+    client, _ = _filtered_client()
+    first = client.post(
+        "/api/target-instances", json={"name": "first", "target_type": "pdf-document"}
+    ).json()
+    client.post("/api/target-instances", json={"name": "skip", "target_type": "zip-archive"})
+    third = client.post(
+        "/api/target-instances", json={"name": "third", "target_type": "pdf-document"}
+    ).json()
+
+    res = client.get("/api/target-instances?target_type=pdf-document")
+    ids = [i["id"] for i in res.json()["instances"]]
+    assert ids == [first["id"], third["id"]]
+
+
+def test_ti_filters_still_validate_limit_and_offset():
+    client, _ = _filtered_client()
+    client.post("/api/target-instances", json={"name": "a", "target_type": "pdf-document"})
+
+    assert client.get("/api/target-instances?target_type=pdf-document&limit=0").status_code == 422
+    assert client.get("/api/target-instances?name=a&offset=-1").status_code == 422
+
+
+def test_ti_filters_do_not_trigger_discovery():
+    import app.engines.discovery.runner as runner_module
+
+    calls = []
+    original = runner_module.run_safe_command
+    try:
+        runner_module.run_safe_command = lambda *a, **k: calls.append((a, k))  # type: ignore[assignment]
+        client, _ = _filtered_client()
+        client.post("/api/target-instances", json={"name": "a", "target_type": "pdf-document"})
+        res = client.get("/api/target-instances?target_type=pdf-document&name=a&limit=10&offset=0")
+        assert res.status_code == 200
+        assert calls == []
+    finally:
+        runner_module.run_safe_command = original  # type: ignore[assignment]
+
+
+def test_ti_filters_survive_deletion_of_other_instances():
+    client, _ = _filtered_client()
+    keep = client.post(
+        "/api/target-instances", json={"name": "keep", "target_type": "pdf-document"}
+    ).json()
+    drop = client.post(
+        "/api/target-instances", json={"name": "drop", "target_type": "pdf-document"}
+    ).json()
+    assert client.delete(f"/api/target-instances/{drop['id']}").status_code == 204
+
+    res = client.get("/api/target-instances?target_type=pdf-document")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["instances"][0]["id"] == keep["id"]

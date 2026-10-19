@@ -348,6 +348,19 @@ def test_plan_endpoint_rejects_unknown_body_fields() -> None:
     assert response.status_code == 422
 
 
+def test_plan_endpoint_bounds_reference_length() -> None:
+    app = create_app(discovery_registry=_registry({JOHN: VERIFIED}))
+    client = TestClient(app)
+    base = "/api/targets/pdf-document/compatibility/plan"
+
+    ok = client.post(base, json={"mode": "simulated", "reference": "r" * 256})
+    assert ok.status_code == 200
+
+    too_long = client.post(base, json={"mode": "simulated", "reference": "r" * 257})
+    assert too_long.status_code == 422
+    assert too_long.json()["detail"][0]["loc"] == ["body", "reference"]
+
+
 def test_plan_endpoint_never_returns_command_shaped_fields() -> None:
     app = create_app(discovery_registry=_registry({JOHN: VERIFIED}))
     client = TestClient(app)

@@ -39,7 +39,16 @@ Thumbs.db
 # Local environment and secrets (never committed)
 .env
 .env.*
+!.env.example
 *.local
 
 # Logs
 *.log
+
+# Local persistence databases and their SQLite sidecars (never committed)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/

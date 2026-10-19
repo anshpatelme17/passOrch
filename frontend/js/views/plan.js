@@ -89,7 +89,13 @@ function renderForm() {
     class: "field__control",
     attrs: [["id", "plan-target"], ["name", "target"], ["required", ""]],
     onChange: (event) => {
+      // Re-render so the submit button enables once a target is chosen - the
+      // same pattern the jobs form uses (the disabled attribute is set at
+      // render time and a bare state update would leave the button unusable
+      // when the view was opened directly at #/plan without a preselected
+      // target from the Targets screen).
       formState.target = event.target.value;
+      renderForm();
     },
     children: [
       h("option", { text: "Select a target type...", attrs: [["value", ""]] }),

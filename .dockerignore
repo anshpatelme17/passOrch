@@ -1,0 +1,32 @@
+# Keep the image context minimal: no VCS, caches, local environments,
+# tests, databases, or secrets.
+.git
+.github
+.gitignore
+.pytest_cache
+.ruff_cache
+.mypy_cache
+__pycache__
+*.py[cod]
+.venv
+venv
+env
+ENV
+data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+.env
+.env.*
+!.env.example
+tests
+frontend-tests
+package.json
+node_modules
+.vscode
+.idea
+.DS_Store
+Thumbs.db

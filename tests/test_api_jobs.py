@@ -1124,3 +1124,208 @@ def test_jobs_min_limit() -> None:
     assert body["total"] == 1
     assert body["count"] == 1
     assert body["limit"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Job instance_id filtering and sorting (Phase 7C)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_filter_by_instance_id() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    inst = _create_instance(c, "pdf-document")
+    associated = c.post(
+        "/api/jobs", json={"target": "pdf-document", "instance_id": inst}
+    ).json()["job_id"]
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get(f"/api/jobs?instance_id={inst}")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["jobs"][0]["job_id"] == associated
+
+
+def test_jobs_filter_by_instance_id_empty_matches_unassociated() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    inst = _create_instance(c, "pdf-document")
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": inst})
+    unassociated = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    res = c.get("/api/jobs?instance_id=")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["jobs"][0]["job_id"] == unassociated
+
+
+def test_jobs_filter_by_instance_id_no_match() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?instance_id=00000000-0000-4000-8000-000000000000")
+    body = res.json()
+    assert body["total"] == 0
+    assert body["count"] == 0
+    assert body["jobs"] == []
+
+
+def test_jobs_instance_id_filter_combines_with_status_and_pagination() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    inst = _create_instance(c, "pdf-document")
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": inst})
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": inst, "mode": "real"})
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get(f"/api/jobs?instance_id={inst}&status=simulated&limit=1")
+    body = res.json()
+    assert body["total"] == 1
+    assert body["count"] == 1
+    assert body["jobs"][0]["status"] == "simulated"
+
+
+def test_jobs_instance_id_filter_total_before_pagination() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    inst = _create_instance(c, "pdf-document")
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": inst})
+    c.post("/api/jobs", json={"target": "pdf-document", "instance_id": inst})
+    c.post("/api/jobs", json={"target": "zip-archive"})
+
+    res = c.get(f"/api/jobs?instance_id={inst}&limit=1")
+    body = res.json()
+    assert body["total"] == 2
+    assert body["count"] == 1
+    assert body["limit"] == 1
+
+
+def test_jobs_sort_default_equals_created_desc() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(4):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+
+    default_ids = [j["job_id"] for j in c.get("/api/jobs").json()["jobs"]]
+    desc_ids = [j["job_id"] for j in c.get("/api/jobs?sort=created_desc").json()["jobs"]]
+    assert default_ids == desc_ids
+    assert len(default_ids) == 4
+
+
+def test_jobs_sort_created_asc_is_exact_reversal() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+
+    desc_ids = [j["job_id"] for j in c.get("/api/jobs").json()["jobs"]]
+    asc_ids = [j["job_id"] for j in c.get("/api/jobs?sort=created_asc").json()["jobs"]]
+    assert asc_ids == list(reversed(desc_ids))
+
+
+def test_jobs_sort_created_asc_paginates_deterministically() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(5):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"job-{i}"})
+
+    full_asc = [j["job_id"] for j in c.get("/api/jobs?sort=created_asc").json()["jobs"]]
+    page1 = c.get("/api/jobs?sort=created_asc&limit=2&offset=0").json()
+    page2 = c.get("/api/jobs?sort=created_asc&limit=2&offset=2").json()
+    page3 = c.get("/api/jobs?sort=created_asc&limit=2&offset=4").json()
+    for page in (page1, page2, page3):
+        assert page["total"] == 5
+    paged = [j["job_id"] for j in page1["jobs"] + page2["jobs"] + page3["jobs"]]
+    assert paged == full_asc
+
+
+def test_jobs_sort_applies_after_filtering() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    for i in range(3):
+        c.post("/api/jobs", json={"target": "pdf-document", "reference": f"pdf-{i}"})
+    c.post("/api/jobs", json={"target": "zip-archive", "reference": "zip-0"})
+
+    res = c.get("/api/jobs?target=pdf-document&sort=created_asc")
+    body = res.json()
+    assert body["total"] == 3
+    assert all(j["target"] == "pdf-document" for j in body["jobs"])
+    desc_ids = [
+        j["job_id"]
+        for j in c.get("/api/jobs?target=pdf-document").json()["jobs"]
+    ]
+    asc_ids = [j["job_id"] for j in body["jobs"]]
+    assert asc_ids == list(reversed(desc_ids))
+
+
+def test_jobs_invalid_sort_returns_422() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?sort=banana")
+    assert res.status_code == 422
+    assert "sort must be one of" in res.json()["detail"]
+
+    res = c.get("/api/jobs?sort=")
+    assert res.status_code == 422
+
+
+def test_jobs_sorting_does_not_trigger_discovery() -> None:
+    c = _instance_client()
+    res = c.get("/api/jobs?sort=created_asc&instance_id=&limit=10&offset=0")
+    assert res.status_code == 200
+    assert "engines" not in res.text
+
+
+def test_jobs_list_schema_is_stable_with_new_params() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+
+    res = c.get("/api/jobs?status=simulated&target=pdf-document&instance_id=&sort=created_desc")
+    body = res.json()
+    assert set(body) == {"jobs", "count", "total", "limit", "offset"}
+
+
+# --------------------------------------------------------------------------- #
+# Reference length bound (Phase 7E)
+# --------------------------------------------------------------------------- #
+
+
+def test_post_jobs_reference_at_max_length_succeeds() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+
+    res = c.post("/api/jobs", json={"target": "pdf-document", "reference": "r" * 256})
+    assert res.status_code == 200
+    assert res.json()["status"] == "simulated"
+
+
+def test_post_jobs_reference_over_max_length_is_422() -> None:
+    store = JobStore()
+    c = _instance_client(job_store=store)
+
+    res = c.post("/api/jobs", json={"target": "pdf-document", "reference": "r" * 257})
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert detail[0]["loc"] == ["body", "reference"]
+    assert len(store) == 0
+
+
+# --------------------------------------------------------------------------- #
+# README accuracy (Phase 7G)
+# --------------------------------------------------------------------------- #
+
+
+def test_readme_documents_list_endpoint_query_contracts() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert "`status`, `target`, `instance_id`" in readme
+    assert "`sort` (`created_desc` default, `created_asc`)" in readme
+    assert "`target_type` (exact), `name` (case-insensitive substring)" in readme
+    # The strict-schema claim must stay accurate: request models forbid extra
+    # fields, while only some response models do.
+    assert 'Request models use `extra="forbid"`' in readme
+    assert "All request/response models use" not in readme

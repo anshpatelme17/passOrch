@@ -522,3 +522,65 @@ def test_instances_view_sends_pagination_params() -> None:
     assert "limit" in src
     assert "offset" in src
     assert "URLSearchParams" in src
+
+
+# --------------------------------------------------------------------------- #
+# List filters (Phase 7D)
+# --------------------------------------------------------------------------- #
+
+
+def test_instances_view_has_filter_controls() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert "instances-filter-type" in src
+    assert "instances-filter-name" in src
+
+
+def test_instances_view_sends_filter_params() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert 'params.set("target_type"' in src
+    assert 'params.set("name"' in src
+
+
+def test_instances_view_filter_changes_reset_offset() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    block = src[src.find("function renderFilters") : src.find("/* ---- list ---")]
+    assert "paginationState.offset = 0" in block
+
+
+def test_instances_view_clear_resets_both_filters() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    block = src[src.find("function renderFilters") : src.find("/* ---- list ---")]
+    assert 'paginationState.nameFilter = ""' in block
+    assert 'paginationState.targetTypeFilter = ""' in block
+
+
+def test_instances_view_filters_use_safe_dom_only() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert "innerHTML" not in src
+    block = src[src.find("function renderFilters") : src.find("/* ---- list ---")]
+    assert 'class: "field__control"' in block
+
+
+# --------------------------------------------------------------------------- #
+# Empty states and duplicate-submission guards (Phase 7F)
+# --------------------------------------------------------------------------- #
+
+
+def test_instances_view_distinguishes_filtered_empty_state() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    assert "No target instances match your filters" in src
+    assert "paginationState.targetTypeFilter || paginationState.nameFilter" in src
+
+
+def test_instances_view_submit_is_guarded_against_duplicates() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    block = src[src.find("async function submitForm") : src.find("/* ---- delete")]
+    assert "submittingInstance" in block
+    assert "finally" in block
+
+
+def test_instances_view_delete_is_guarded_against_duplicates() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "instances.js")
+    block = src[src.find("async function processDelete") : src.find("/* ---- view")]
+    assert "deletingInstanceId" in block
+    assert "finally" in block

@@ -623,3 +623,78 @@ def test_jobs_view_sends_pagination_params() -> None:
     assert "limit" in src
     assert "offset" in src
     assert "URLSearchParams" in src
+
+
+# --------------------------------------------------------------------------- #
+# List filters and sorting (Phase 7C)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_view_has_filter_controls() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "jobs-filter-status" in src
+    assert "jobs-filter-target" in src
+    assert "jobs-filter-instance" in src
+    assert "jobs-filter-sort" in src
+
+
+def test_jobs_view_sends_filter_and_sort_params() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert 'params.set("status"' in src
+    assert 'params.set("target"' in src
+    assert 'params.set("instance_id"' in src
+    assert 'params.set("sort"' in src
+
+
+def test_jobs_view_instance_filter_none_sends_empty_instance_id() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert 'paginationState.instanceFilter === "none"' in src
+
+
+def test_jobs_view_filter_changes_reset_offset() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    block = src[src.find("function renderFilters") : src.find("/* ---- form")]
+    assert block.count("paginationState.offset = 0") == 4
+
+
+def test_jobs_view_sort_defaults_to_created_desc() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert '"created_desc"' in src
+    assert '"created_asc"' in src
+
+
+def test_jobs_view_filter_bar_uses_defined_styles() -> None:
+    css = _read(FRONTEND_DIR / "css" / "styles.css")
+    assert ".filters" in css
+    assert ".filters__group" in css
+
+
+def test_jobs_view_filter_controls_use_safe_selects() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "innerHTML" not in src
+    block = src[src.find("function filterSelect") : src.find("/* ---- form")]
+    assert 'class: "field__control"' in block
+
+
+# --------------------------------------------------------------------------- #
+# Empty states and duplicate-submission guards (Phase 7F)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_view_distinguishes_filtered_empty_state() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "No jobs match your filters" in src
+    assert "hasActiveFilters" in src
+
+
+def test_jobs_view_submit_is_guarded_against_duplicates() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    block = src[src.find("async function submitJob") : src.find("function createdSummary")]
+    assert "submittingJob" in block
+    assert "finally" in block
+
+
+def test_jobs_view_submit_guard_resets_in_finally() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    block = src[src.find("async function submitJob") : src.find("function createdSummary")]
+    assert "submittingJob = false" in block

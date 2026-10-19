@@ -1,0 +1,60 @@
+# CI for PassOrch - simulation-only audit-planning platform.
+#
+# Runs the exact checks documented in README "Testing":
+#   * Python test suite (temporary directories and in-memory stores; no
+#     real token, database, engine, or external service required)
+#   * Ruff (F/E9, line length 100 - see pyproject.toml)
+#   * git diff --check (whitespace)
+# * Frontend harness via its verified pytest invocation (the harness is
+#     a pytest module - running it as a plain script cannot import the
+#     ``tests`` package)
+#
+# Action versions: major release tags.  This repository pins no
+# dependencies to commit SHAs and ships no lockfile; pinning actions to
+# immutable revisions was not adopted because the required SHAs cannot
+# be verified from within this offline audit environment.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install project and test dependencies
+        # constraints.txt pins the exact verified closure (see that file);
+        # pyproject.toml keeps the compatible ranges.
+        run: python -m pip install -c constraints.txt -e ".[test]"
+
+      - name: Python test suite
+        run: python -m pytest --tb=short
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      - name: Whitespace check
+        run: git diff --check
+
+      - name: Frontend harness
+        run: python -m pytest tests/test_frontend_js_execution.py

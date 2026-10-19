@@ -1,15 +1,25 @@
-"""Phase 3C - individual target instance API endpoints."""
+"""Phase 3C/7B/7D/8B - individual target instance API endpoints.
+
+Mutations (``POST`` / ``DELETE``) answer ``HTTP 503`` with the shared
+structured ``persistence_unavailable`` detail when a configured
+persistent store fails the write (Phase 8B); reads are served from the
+in-memory store and never touch the database.  All other contracts -
+validation, ordering, filtering, pagination and 404 identifiers - are
+unchanged from Phase 7D.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from app.api.routes.jobs import persistence_unavailable_detail
 from app.api.schemas import (
     TargetInstance,
     TargetInstanceCreateRequest,
     TargetInstancePageResponse,
 )
 from app.core.orchestrator.target_instances import create_target_instance
+from app.engines.persistence import PersistenceError
 from app.engines.target_instances import (
     DuplicateTargetInstanceError,
     InvalidTargetInstanceError,
@@ -45,6 +55,11 @@ def create_target_instance_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (InvalidTargetInstanceError, DuplicateTargetInstanceError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail("target instance"),
+        ) from exc
     return TargetInstance(
         id=record.id,
         name=record.name,
@@ -57,16 +72,31 @@ def create_target_instance_endpoint(
 @router.get("/api/target-instances", response_model=TargetInstancePageResponse)
 def list_target_instances(
     request: Request,
+    target_type: str | None = None,
+    name: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> TargetInstancePageResponse:
+    """List target instances, insertion-ordered (oldest-first), filtered and paged.
+
+    ``target_type`` is an exact match and ``name`` a case-insensitive substring
+    match; both are plain value filters applied **before** pagination, so
+    ``total`` counts the filtered set. An unknown value simply yields an empty
+    page (HTTP 200), consistent with the job list filters.
+    """
+
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
     if offset < 0:
         raise HTTPException(status_code=422, detail="offset must be non-negative")
 
     store = _get_store(request)
-    records = store.list()
+    records = list(store.list())
+    if target_type is not None:
+        records = [r for r in records if r.target_type == target_type]
+    if name is not None:
+        needle = name.lower()
+        records = [r for r in records if needle in r.name.lower()]
     total = len(records)
     paginated = records[offset : offset + limit]
     instances = [
@@ -106,7 +136,13 @@ def get_target_instance(instance_id: str, request: Request) -> TargetInstance:
 @router.delete("/api/target-instances/{instance_id}", status_code=204, response_class=Response)
 def delete_target_instance(instance_id: str, request: Request) -> Response:
     store = _get_store(request)
-    deleted = store.delete(instance_id)
+    try:
+        deleted = store.delete(instance_id)
+    except PersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail("target instance"),
+        ) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="target_instance_not_found")
     return Response(status_code=204)
