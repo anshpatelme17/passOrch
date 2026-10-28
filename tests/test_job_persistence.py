@@ -547,6 +547,107 @@ def test_database_level_duplicate_job_id_raises_duplicate_error(tmp_path: Path) 
         store._db.insert_job(job)
 
 
+# --------------------------------------------------------------------------- #
+# atomic eviction mirror: insert + FIFO-row delete in ONE transaction
+# --------------------------------------------------------------------------- #
+
+
+def test_eviction_delete_failure_rolls_the_insert_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed victim-row delete must not leave the new row committed.
+
+    The fault is injected at the SQL layer (a statement against a
+    nonexistent table) so the real sqlite driver fails during the
+    eviction stage of the combined transaction, exercising its actual
+    rollback behaviour instead of mocking the whole operation.
+    """
+
+    db = tmp_path / "jobs.db"
+    store = PersistentJobStore(db, capacity=2)
+    older = _failed_job(created_at=1)
+    newer = _failed_job(created_at=2)
+    store.put(older)
+    store.put(newer)
+
+    monkeypatch.setattr(
+        "app.engines.job_persistence._DELETE_JOB_SQL",
+        "DELETE FROM no_such_table WHERE job_id = ?",
+    )
+    fresh = _failed_job(created_at=3)
+    with pytest.raises(JobPersistenceError):
+        store.put(fresh)
+
+    # memory: exactly the original two jobs, FIFO order intact, no new job
+    assert [item.job_id for item in store.list()] == [newer.job_id, older.job_id]
+    assert store.get(fresh.job_id) is None
+    # sqlite: exactly the original two rows - the rolled-back insert left
+    # no new row and removed no victim row
+    assert _row_count(db) == 2
+    connection = sqlite3.connect(db)
+    try:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM passorch_jobs WHERE job_id = ?", (fresh.job_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None and int(row[0]) == 0
+
+    monkeypatch.undo()
+    # the store remains fully usable after the failed attempt
+    store.put(fresh)
+    assert [item.job_id for item in store.list()] == [fresh.job_id, newer.job_id]
+    assert _row_count(db) == 2
+
+
+def test_eviction_insert_failure_inside_the_combined_operation_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing insert inside the combined operation changes nothing."""
+
+    db = tmp_path / "jobs.db"
+    store = PersistentJobStore(db, capacity=2)
+    older = _failed_job(created_at=1)
+    newer = _failed_job(created_at=2)
+    store.put(older)
+    store.put(newer)
+
+    monkeypatch.setattr(
+        "app.engines.job_persistence._INSERT_JOB_SQL",
+        "INSERT INTO no_such_table (job_id, payload) VALUES (?, ?)",
+    )
+    fresh = _failed_job(created_at=3)
+    with pytest.raises(JobPersistenceError):
+        store.put(fresh)
+
+    assert [item.job_id for item in store.list()] == [newer.job_id, older.job_id]
+    assert store.get(fresh.job_id) is None
+    assert _row_count(db) == 2
+
+
+def test_successful_eviction_put_removes_the_oldest_row_in_both_views(
+    tmp_path: Path,
+) -> None:
+    """A successful third put evicts the oldest record in memory and SQLite."""
+
+    db = tmp_path / "jobs.db"
+    store = PersistentJobStore(db, capacity=2)
+    first = _failed_job(created_at=1)
+    second = _failed_job(created_at=2)
+    third = _failed_job(created_at=3)
+    store.put(first)
+    store.put(second)
+    store.put(third)
+
+    assert [item.job_id for item in store.list()] == [third.job_id, second.job_id]
+    assert store.get(first.job_id) is None
+    assert _row_count(db) == 2
+
+    reopened = PersistentJobStore(db, capacity=2)
+    assert [item.job_id for item in reopened.list()] == [third.job_id, second.job_id]
+    assert reopened.get(first.job_id) is None
+
+
 def test_out_of_band_row_removal_reads_as_missing(tmp_path: Path) -> None:
     db = tmp_path / "jobs.db"
     first = _client(db)

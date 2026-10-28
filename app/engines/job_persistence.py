@@ -44,6 +44,7 @@ is not offered.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from app.core.orchestrator.plan import PlanPreview
@@ -407,6 +408,30 @@ class _JobDatabase:
             on_integrity=DuplicateJobError(job.job_id),
         )
 
+    def insert_job_with_eviction(self, job: AuditJob, victim_job_id: str) -> None:
+        """Insert ``job`` and delete the FIFO victim row in ONE transaction.
+
+        Both statements run on the same connection so the mirror change is
+        all-or-nothing: a failure at either stage (especially the
+        victim-row delete) rolls the insert back too, leaving the database
+        with neither the new row nor the stale victim row.  The put
+        compensation path then restores the in-memory view to match.
+
+        The transaction commits only after both statements succeed.  The
+        driver raises for the insert's uniqueness conflict is mapped here
+        to the domain duplicate error (``transaction`` itself maps any
+        other driver failure onto the generic ``failure`` message); the
+        exception still trips the rollback before it propagates.
+        """
+
+        payload = _job_to_payload(job)
+        with self._db.transaction(_WRITE_FAILED) as connection:
+            try:
+                connection.execute(_INSERT_JOB_SQL, (job.job_id, payload))
+            except sqlite3.IntegrityError as exc:
+                raise DuplicateJobError(job.job_id) from exc
+            connection.execute(_DELETE_JOB_SQL, (victim_job_id,))
+
     def delete_job(self, job_id: str) -> bool:
         return self._db.write(_DELETE_JOB_SQL, (job_id,), failure=_DELETE_FAILED) > 0
 
@@ -435,7 +460,9 @@ class PersistentJobStore(JobStore):
     ``delete`` and ``reset`` additionally mirror the change to the database
     at ``db_path``; a failed mirror write raises :class:`JobPersistenceError`
     and leaves the in-memory view truthful (a failed ``put`` rolls back its
-    own insert, a failed ``delete`` removes nothing).
+    own insert, a failed ``delete`` removes nothing).  An eviction-bearing
+    ``put`` mirrors its insert and FIFO-row delete as one atomic
+    transaction, so neither view can report a row the other never saw.
 
     Opening happens in the constructor: the schema is brought to the
     current version (running any pending Phase 8C migrations, stamping
@@ -471,10 +498,13 @@ class PersistentJobStore(JobStore):
         """Store a terminal job in memory and in the database.
 
         Validation is the base class contract (identical exceptions for
-        malformed or duplicate jobs).  If the mirrored insert fails after
+        malformed or duplicate jobs).  If the mirrored write fails after
         the in-memory insert, memory is rolled back - including restoring
         any FIFO victim the insert evicted - so neither view reports a
-        write that the other side never saw.
+        write that the other side never saw.  When the insert also evicts
+        a FIFO victim, the mirror (new row insert + victim row delete) is
+        one atomic SQLite transaction: a failure at either stage rolls the
+        insert back, so the stale victim row can never linger committed.
         """
 
         with self._lock:
@@ -488,15 +518,16 @@ class PersistentJobStore(JobStore):
                 victim = (first_id, first_job)
             stored = super().put(job)
             try:
-                self._db.insert_job(stored)
+                if victim is not None:
+                    self._db.insert_job_with_eviction(stored, victim[0])
+                else:
+                    self._db.insert_job(stored)
             except (JobPersistenceError, DuplicateJobError):
                 self._jobs.pop(stored.job_id, None)
                 if victim is not None and victim[0] not in self._jobs:
                     self._jobs[victim[0]] = victim[1]
                     self._jobs.move_to_end(victim[0], last=False)
                 raise
-            if victim is not None:
-                self._db.delete_job(victim[0])
             return stored
 
     def delete(self, job_id: object) -> bool:
