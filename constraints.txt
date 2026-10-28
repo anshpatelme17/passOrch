@@ -25,7 +25,7 @@
 #   python -m pip freeze  (then keep the closure listed below)
 
 annotated-types==0.7.0
-anyio==4.11.0
+anyio==4.15.1
 ast-serialize==0.13.1
 certifi==2026.7.22
 click==8.3.1
