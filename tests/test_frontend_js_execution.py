@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import ROOT, find_node, run_node_js_tests
+from tests.conftest import ROOT, find_node, node_js_test_files, run_node_js_tests
 
 FRONTEND_TESTS = ROOT / "frontend-tests"
 
@@ -88,7 +88,7 @@ def test_javascript_suite_reports_nonzero_test_count() -> None:
 
     node, how = _node_or_skip()
     proc = subprocess.run(
-        [node, "--test", "--test-reporter=tap", "frontend-tests/*.test.mjs"],
+        [node, "--test", "--test-reporter=tap", *node_js_test_files()],
         capture_output=True,
         text=True,
         cwd=str(ROOT),

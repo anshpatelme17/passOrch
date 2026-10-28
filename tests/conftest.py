@@ -69,6 +69,24 @@ def find_node() -> tuple[str | None, str]:
     return None, "not found"
 
 
+def node_js_test_files() -> list[str]:
+    """The individual JavaScript suite files, relative to the repo root.
+
+    The glob is expanded here, in Python, rather than handed to Node as a
+    pattern: ``node --test`` only understands glob arguments from Node 21
+    onward, while ``package.json`` declares ``engines.node >=20``. The runner
+    below uses ``shell=False``, so no OS shell expands it either.
+    """
+
+    files = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "frontend-tests").glob("*.test.mjs")
+    )
+    if not files:
+        raise AssertionError(f"no JavaScript suites matched {JS_TEST_GLOB}")
+    return files
+
+
 def run_node_js_tests(node: str) -> subprocess.CompletedProcess[str]:
     """Run the JavaScript suites with the one authorised Node invocation.
 
@@ -83,7 +101,7 @@ def run_node_js_tests(node: str) -> subprocess.CompletedProcess[str]:
     if not Path(node).is_file():
         raise AssertionError(f"Node executable does not exist: {node}")
     return subprocess.run(
-        [node, "--test", JS_TEST_GLOB],
+        [node, "--test", *node_js_test_files()],
         capture_output=True,
         text=True,
         cwd=str(ROOT),
