@@ -30,17 +30,18 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.api.errors import invalid_request, job_not_found
 from app.api.schemas import JobCreateRequest, JobInfo, JobPageResponse, JobStatsResponse, JobSummary
+from app.api.store_resolution import (
+    persistence_unavailable_detail,
+    resolve_job_store,
+    resolve_target_instance_store,
+)
 from app.core.orchestrator.jobs import create_job
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
 from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
 from app.engines.discovery.registry import DiscoveryRegistry
 from app.engines.execution_policy import ExecutionPolicy
 from app.engines.job_persistence import JobPersistenceError
-from app.engines.jobs import AuditJob, JobStore, default_job_store
-from app.engines.target_instances import (
-    TargetInstanceStore,
-    default_target_instance_store,
-)
+from app.engines.jobs import AuditJob
 
 __all__ = ["create", "detail", "list_jobs", "router", "unknown_target_detail"]
 
@@ -57,10 +58,7 @@ INSTANCE_NOT_FOUND_ERROR = "target_instance_not_found"
 #: of the two is wrong without a second round-trip.
 INSTANCE_TYPE_MISMATCH_ERROR = "target_instance_type_mismatch"
 
-#: Stable machine-readable code for a failed job-storage write (Phase 8A).
-PERSISTENCE_ERROR = "persistence_unavailable"
-
-#: Stable, structured detail for a target that is not in ``TARGET_FORMAT_POLICY``.
+#: Stable machine-readable code for a target that is not in ``TARGET_FORMAT_POLICY``.
 #: ``supported_targets`` mirrors the read-only catalog exposed by
 #: ``GET /api/targets`` so a caller can build a picker without a second request.
 UNKNOWN_TARGET_DETAIL: dict[str, object] = {
@@ -109,69 +107,6 @@ def instance_type_mismatch_detail(target: str, instance_target_type: str) -> dic
         "target": target,
         "instance_target_type": instance_target_type,
     }
-
-
-def persistence_unavailable_detail(subject: str = "job") -> dict[str, str]:
-    """Structured 503 detail for a failed persistence write (Phases 8A/8B).
-
-    Rebuilt per call like the other detail helpers and deliberately
-    generic: SQL text, file paths and database-driver messages stay
-    chained on the server-side exception and never reach an API response.
-    ``subject`` names the store (``"job"``, ``"target instance"``) so each
-    endpoint's message describes the store it actually uses.
-    """
-
-    return {
-        "error": PERSISTENCE_ERROR,
-        "detail": f"{subject} storage is temporarily unavailable",
-    }
-
-
-def _resolve_job_store(request: Request) -> JobStore:
-    """The job store bound to this application.
-
-    An absent store keeps the historical fallback to the process-wide
-    default (unconfigured state).  A store that is present but fails the
-    ``JobStore`` type check means application state was miswired: the
-    request fails closed with the shared generic ``503
-    persistence_unavailable`` detail - never the offending object's class
-    name, repr or path - and the foreign object is never read or written.
-    """
-    state = request.app.state
-    store = getattr(state, "job_store", None)
-    if store is None:
-        return default_job_store()
-    if not isinstance(store, JobStore):
-        raise HTTPException(
-            status_code=503,
-            detail=persistence_unavailable_detail(),
-        )
-    return store
-
-
-def _resolve_target_instance_store(request: Request) -> TargetInstanceStore:
-    """The target-instance store **belonging to this application**.
-
-    An absent store keeps the historical fallback to the process-wide
-    default (unconfigured state).  A store that is present but fails the
-    ``TargetInstanceStore`` type check means application state was
-    miswired: the request fails closed with the shared generic ``503
-    persistence_unavailable`` detail - never the offending object's class
-    name, repr or path - and the foreign object is never read or written,
-    so an instance registered against another app can never be resolved
-    here and a miswired store can neither contaminate the default store
-    nor crash a handler with a raw attribute error.
-    """
-
-    store = getattr(request.app.state, "target_instance_store", None)
-    if store is None:
-        return default_target_instance_store()
-    if not isinstance(store, TargetInstanceStore):
-        raise HTTPException(
-            status_code=503,
-            detail=persistence_unavailable_detail("target instance"),
-        )
-    return store
 
 
 def _resolve_discovery_registry(request: Request) -> DiscoveryRegistry | None:
@@ -226,7 +161,7 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
         # An explicitly supplied (even empty) identifier is validated, never
         # silently downgraded to "no association": that would hide client bugs
         # the way the old implicit target default did.
-        instance = _resolve_target_instance_store(request).get(instance_id)
+        instance = resolve_target_instance_store(request).get(instance_id)
         if instance is None:
             raise HTTPException(
                 status_code=422,
@@ -249,7 +184,7 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
             reference=body.reference,
             instance_id=instance_id,
             instance_target_type=instance_target_type,
-            store=_resolve_job_store(request),
+            store=resolve_job_store(request),
         )
     except JobPersistenceError as exc:
         raise HTTPException(
@@ -292,7 +227,7 @@ def list_jobs(
     if sort not in JOB_SORT_MODES:
         raise invalid_request("sort must be one of: " + ", ".join(JOB_SORT_MODES))
 
-    store = _resolve_job_store(request)
+    store = resolve_job_store(request)
     jobs: list[AuditJob] = list(store.list())
 
     if status is not None:
@@ -329,7 +264,7 @@ def list_jobs(
 def job_stats(request: Request) -> JobStatsResponse:
     """Read-only aggregation over the job store."""
 
-    store = _resolve_job_store(request)
+    store = resolve_job_store(request)
     jobs: list[AuditJob] = list(store.list())
 
     by_status: dict[str, int] = {}
@@ -362,7 +297,7 @@ def job_stats(request: Request) -> JobStatsResponse:
 def detail(job_id: str, request: Request) -> JobInfo:
     """Return one recorded job; 404 for malformed or unknown IDs."""
 
-    store = _resolve_job_store(request)
+    store = resolve_job_store(request)
     job = store.get(job_id)
     if job is None:
         raise job_not_found()
@@ -378,7 +313,7 @@ def delete_job(job_id: str, request: Request) -> Response:
     write succeeds).
     """
 
-    store = _resolve_job_store(request)
+    store = resolve_job_store(request)
     try:
         deleted = store.delete(job_id)
     except JobPersistenceError as exc:

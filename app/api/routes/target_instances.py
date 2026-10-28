@@ -17,12 +17,15 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.api.errors import instance_not_found, invalid_request
-from app.api.routes.jobs import persistence_unavailable_detail
 from app.api.schemas import (
     TargetInstance,
     TargetInstanceCreateRequest,
     TargetInstancePageResponse,
     TargetInstanceUpdateRequest,
+)
+from app.api.store_resolution import (
+    persistence_unavailable_detail,
+    resolve_target_instance_store,
 )
 from app.core.orchestrator.target_instances import (
     create_target_instance,
@@ -33,37 +36,11 @@ from app.engines.target_instances import (
     DuplicateTargetInstanceError,
     InvalidTargetInstanceError,
     TargetInstanceRecord,
-    TargetInstanceStore,
-    default_target_instance_store,
 )
 
 router = APIRouter(tags=["target-instances"])
 
 __all__ = ["router"]
-
-
-def _get_store(request: Request) -> TargetInstanceStore:
-    """The target-instance store bound to this application (Step 12).
-
-    An absent store keeps the historical fallback to the process-wide
-    default (unconfigured state).  A store that is present but fails the
-    ``TargetInstanceStore`` type check means application state was
-    miswired: the request fails closed with the shared generic ``503
-    persistence_unavailable`` detail - never the offending object's class
-    name, repr or path - and the foreign object is never read or written,
-    so it can neither contaminate the default store nor crash a handler
-    with a raw attribute error.
-    """
-
-    store = getattr(request.app.state, "target_instance_store", None)
-    if store is None:
-        return default_target_instance_store()
-    if not isinstance(store, TargetInstanceStore):
-        raise HTTPException(
-            status_code=503,
-            detail=persistence_unavailable_detail("target instance"),
-        )
-    return store
 
 
 def _to_response(record: TargetInstanceRecord) -> TargetInstance:
@@ -80,7 +57,7 @@ def _to_response(record: TargetInstanceRecord) -> TargetInstance:
 def create_target_instance_endpoint(
     body: TargetInstanceCreateRequest, request: Request
 ) -> TargetInstance:
-    store = _get_store(request)
+    store = resolve_target_instance_store(request)
     try:
         record = create_target_instance(
             body.name,
@@ -121,7 +98,7 @@ def list_target_instances(
     if offset < 0:
         raise invalid_request("offset must be non-negative")
 
-    store = _get_store(request)
+    store = resolve_target_instance_store(request)
     records = list(store.list())
     if target_type is not None:
         records = [r for r in records if r.target_type == target_type]
@@ -151,7 +128,7 @@ def list_target_instances(
 
 @router.get("/api/target-instances/{instance_id}", response_model=TargetInstance)
 def get_target_instance(instance_id: str, request: Request) -> TargetInstance:
-    store = _get_store(request)
+    store = resolve_target_instance_store(request)
     record = store.get(instance_id)
     if record is None:
         raise instance_not_found()
@@ -174,7 +151,7 @@ def update_target_instance_endpoint(
     truthful (the failed update is never half-applied).
     """
 
-    store = _get_store(request)
+    store = resolve_target_instance_store(request)
     try:
         record = update_target_instance(
             instance_id,
@@ -198,7 +175,7 @@ def update_target_instance_endpoint(
 
 @router.delete("/api/target-instances/{instance_id}", status_code=204, response_class=Response)
 def delete_target_instance(instance_id: str, request: Request) -> Response:
-    store = _get_store(request)
+    store = resolve_target_instance_store(request)
     try:
         deleted = store.delete(instance_id)
     except PersistenceError as exc:

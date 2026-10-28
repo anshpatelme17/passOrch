@@ -24,7 +24,8 @@ are *not* Pydantic validation - they use this envelope.
 (429), ``payload_too_large`` (413), ``unsupported_transfer_encoding`` (400),
 ``unknown_target`` (422), ``target_instance_type_mismatch`` (422) and the
 instance-association 422s already follow this envelope; their builders stay in
-their domain modules (``app.api.auth``, ``app.api.rate_limit``,
+their domain modules (``app.api.auth``, ``app.api.rate_limit``) and the shared
+store-resolution helpers (``app.api.store_resolution``, moved verbatim from
 ``app.api.routes.jobs``) so their tests and imports are untouched.
 """
 

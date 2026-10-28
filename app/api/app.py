@@ -72,6 +72,10 @@ from app.api.rate_limit import (
     resolve_client_address,
     unsupported_transfer_encoding_detail,
 )
+from app.api.store_resolution import (
+    job_store_from_state,
+    target_instance_store_from_state,
+)
 from app.api.routes.engines import router as engines_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.target_instances import router as target_instances_router
@@ -352,12 +356,8 @@ def create_app(
         """
 
         try:
-            job_store = application.state.job_store
-            if not isinstance(job_store, JobStore):
-                raise TypeError("job store has an invalid type")
-            target_store = application.state.target_instance_store
-            if not isinstance(target_store, TargetInstanceStore):
-                raise TypeError("target instance store has an invalid type")
+            job_store = job_store_from_state(application.state)
+            target_store = target_instance_store_from_state(application.state)
             job_store.list()
             target_store.list()
         except Exception:
