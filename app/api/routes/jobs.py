@@ -128,24 +128,50 @@ def persistence_unavailable_detail(subject: str = "job") -> dict[str, str]:
 
 
 def _resolve_job_store(request: Request) -> JobStore:
+    """The job store bound to this application.
+
+    An absent store keeps the historical fallback to the process-wide
+    default (unconfigured state).  A store that is present but fails the
+    ``JobStore`` type check means application state was miswired: the
+    request fails closed with the shared generic ``503
+    persistence_unavailable`` detail - never the offending object's class
+    name, repr or path - and the foreign object is never read or written.
+    """
     state = request.app.state
     store = getattr(state, "job_store", None)
-    if isinstance(store, JobStore):
-        return store
-    return default_job_store()
+    if store is None:
+        return default_job_store()
+    if not isinstance(store, JobStore):
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail(),
+        )
+    return store
 
 
 def _resolve_target_instance_store(request: Request) -> TargetInstanceStore:
     """The target-instance store **belonging to this application**.
 
-    An injected store always wins over the process-wide default, so an
-    instance registered against another app can never be resolved here.
+    An absent store keeps the historical fallback to the process-wide
+    default (unconfigured state).  A store that is present but fails the
+    ``TargetInstanceStore`` type check means application state was
+    miswired: the request fails closed with the shared generic ``503
+    persistence_unavailable`` detail - never the offending object's class
+    name, repr or path - and the foreign object is never read or written,
+    so an instance registered against another app can never be resolved
+    here and a miswired store can neither contaminate the default store
+    nor crash a handler with a raw attribute error.
     """
 
     store = getattr(request.app.state, "target_instance_store", None)
-    if isinstance(store, TargetInstanceStore):
-        return store
-    return default_target_instance_store()
+    if store is None:
+        return default_target_instance_store()
+    if not isinstance(store, TargetInstanceStore):
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail("target instance"),
+        )
+    return store
 
 
 def _resolve_discovery_registry(request: Request) -> DiscoveryRegistry | None:

@@ -1183,3 +1183,254 @@ def test_api_patch_triggers_no_discovery_or_execution():
         assert calls == []
     finally:
         runner_module.run_safe_command = original  # type: ignore[assignment]
+
+
+# -- invalidly configured store on application state (Step 12) -------------- #
+
+
+class _ForeignStore:
+    """A wrong-typed object left on application state by a wiring bug.
+
+    It duck-types the store surface just enough to look usable; every
+    method records itself so the tests can prove the request failed closed    before the object was ever read or written.
+    """
+
+    def __init__(self):
+        self.accessed: list[str] = []
+
+    def _record(self, name: str) -> None:
+        self.accessed.append(name)
+
+    def list(self):
+        self._record("list")
+        return []
+
+    def get(self, instance_id):
+        self._record("get")
+        return None
+
+    def put(self, record):
+        self._record("put")
+        return record
+
+    def delete(self, instance_id):
+        self._record("delete")
+        return False
+
+    def update(self, instance_id, record):
+        self._record("update")
+        return None
+
+
+def test_api_uses_the_correctly_configured_store_not_the_default():
+    client, store = _client()
+    r = client.post(
+        "/api/target-instances",
+        json={"name": "step12", "target_type": "office-document"},
+    )
+    assert r.status_code == 201
+    iid = r.json()["id"]
+    assert store.get(iid) is not None
+    assert default_target_instance_store().get(iid) is None
+    assert client.get(f"/api/target-instances/{iid}").status_code == 200
+    assert len(default_target_instance_store()) == 0
+
+
+def test_api_fails_closed_when_state_holds_an_invalid_store():
+    client = TestClient(create_app())
+    poison = _ForeignStore()
+    client.app.state.target_instance_store = poison
+
+    r = client.get("/api/target-instances")
+    assert r.status_code == 503
+    assert r.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "target instance storage is temporarily unavailable",
+        }
+    }
+
+    iid = "00000000-0000-0000-0000-000000000000"
+    assert (
+        client.post(
+            "/api/target-instances",
+            json={"name": "x", "target_type": "office-document"},
+        ).status_code
+        == 503
+    )
+    assert client.get(f"/api/target-instances/{iid}").status_code == 503
+    assert (
+        client.patch(f"/api/target-instances/{iid}", json={"name": "y"}).status_code
+        == 503
+    )
+    assert client.delete(f"/api/target-instances/{iid}").status_code == 503
+
+    assert poison.accessed == []
+    assert len(default_target_instance_store()) == 0
+
+
+def test_api_store_misconfiguration_response_exposes_no_internal_details():
+    client = TestClient(create_app())
+    poison = _ForeignStore()
+    client.app.state.target_instance_store = poison
+
+    r = client.get("/api/target-instances")
+    assert r.status_code == 503
+    assert "ForeignStore" not in r.text
+    assert "target_instance_store" not in r.text
+    assert "Traceback" not in r.text
+    assert "app.state" not in r.text
+    assert r.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "target instance storage is temporarily unavailable",
+        }
+    }
+
+
+def test_api_store_misconfiguration_leaves_bearer_auth_unchanged():
+    token = "step12-token"
+    client = TestClient(create_app(api_token=token))
+    poison = _ForeignStore()
+    client.app.state.target_instance_store = poison
+
+    unauthenticated = client.post(
+        "/api/target-instances",
+        json={"name": "x", "target_type": "office-document"},
+    )
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json() == {
+        "detail": {
+            "error": "unauthorized",
+            "detail": "a valid bearer token is required",
+        }
+    }
+    assert poison.accessed == []
+
+    authenticated = client.post(
+        "/api/target-instances",
+        json={"name": "x", "target_type": "office-document"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert authenticated.status_code == 503
+    assert poison.accessed == []
+
+    assert client.get("/api/target-instances").status_code == 503
+
+# ---------------------------------------------------------------------------
+# Orchestrator store validation (fail-closed for wrong-typed stores)
+# ---------------------------------------------------------------------------
+
+
+class _ForeignOrchestratorStore:
+    """A wrong-typed object with a working store surface."""
+
+    def __init__(self) -> None:
+        self.accessed: list[str] = []
+
+    def _record(self, name: str) -> None:
+        self.accessed.append(name)
+
+    def list(self):
+        self._record("list")
+        return []
+
+    def get(self, instance_id):
+        self._record("get")
+        return None
+
+    def put(self, record):
+        self._record("put")
+        return record
+
+    def delete(self, instance_id):
+        self._record("delete")
+        return False
+
+    def update(self, instance_id, *, name=None, description=None):
+        self._record("update")
+        return None
+
+
+def test_orchestrator_resolve_rejects_wrong_type_store() -> None:
+    store = TargetInstanceStore(capacity=10)
+    from app.core.orchestrator.target_instances import create_target_instance
+
+    rec = create_target_instance("orig", "pdf-document", store=store)
+    poison = _ForeignOrchestratorStore()
+    try:
+        resolve_target_instance(rec.id, store=poison)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for wrong-typed store")
+    assert poison.accessed == []
+    # Valid store still resolves.
+    assert resolve_target_instance(rec.id, store=store) is rec
+
+
+def test_orchestrator_create_rejects_wrong_type_store_without_writing() -> None:
+    store = TargetInstanceStore(capacity=10)
+    default_store = default_target_instance_store()
+    default_store.reset()
+    poison = _ForeignOrchestratorStore()
+    try:
+        create_target_instance("x", "pdf-document", store=poison)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for wrong-typed store")
+    assert poison.accessed == []
+    assert len(default_store) == 0
+    # Valid store still works.
+    rec = create_target_instance("valid", "pdf-document", store=store)
+    assert store.get(rec.id) is not None
+    assert default_store.get(rec.id) is None
+    default_store.reset()
+
+
+def test_orchestrator_update_rejects_wrong_type_store_without_modifying() -> None:
+    store = TargetInstanceStore(capacity=10)
+    from app.core.orchestrator.target_instances import create_target_instance
+
+    rec = create_target_instance("orig", "pdf-document", store=store)
+    default_store = default_target_instance_store()
+    default_store.reset()
+    poison = _ForeignOrchestratorStore()
+    try:
+        update_target_instance(rec.id, name="renamed", store=poison)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for wrong-typed store")
+    assert poison.accessed == []
+    assert default_store.get(rec.id) is None
+    # Valid store still updates.
+    updated = update_target_instance(rec.id, name="renamed", store=store)
+    assert updated is not None
+    assert updated.name == "renamed"
+    assert store.get(rec.id).name == "renamed"
+    default_store.reset()
+
+
+def test_orchestrator_none_store_preserves_fallback() -> None:
+    default_store = default_target_instance_store()
+    default_store.reset()
+    rec = create_target_instance("none-fallback", "pdf-document", store=None)
+    assert default_store.get(rec.id) is not None
+    assert resolve_target_instance(rec.id, store=None) is rec
+    updated = update_target_instance(rec.id, name="renamed", store=None)
+    assert updated is not None
+    assert updated.name == "renamed"
+    default_store.reset()
+
+
+def test_orchestrator_valid_store_continues_to_work() -> None:
+    store = TargetInstanceStore(capacity=10)
+    rec = create_target_instance("v", "pdf-document", store=store)
+    assert resolve_target_instance(rec.id, store=store) is rec
+    updated = update_target_instance(rec.id, name="renamed", store=store)
+    assert updated is not None and updated.name == "renamed"
+    assert store.get(rec.id).name == "renamed"
+    # default store untouched
+    assert default_target_instance_store().get(rec.id) is None

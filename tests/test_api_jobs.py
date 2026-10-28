@@ -29,7 +29,7 @@ from app.engines.discovery.models import (
 )
 from app.engines.discovery.registry import FORBIDDEN_PAYLOAD_KEYS, DiscoveryRegistry
 from app.engines.jobs import JobStore, default_job_store
-from app.engines.target_instances import TargetInstanceStore
+from app.engines.target_instances import TargetInstanceStore, default_target_instance_store
 
 JOBS_ROUTE_MODULE = Path("app/api/routes/jobs.py")
 
@@ -1335,3 +1335,299 @@ def test_readme_documents_list_endpoint_query_contracts() -> None:
     # fields, while only some response models do.
     assert 'Request models use `extra="forbid"`' in readme
     assert "All request/response models use" not in readme
+
+# ---------------------------------------------------------------------------
+# Wrongly typed job store on application state (fail-closed alignment)
+# ---------------------------------------------------------------------------
+
+
+class _ForeignJobStore:
+    """A wrong-typed object with a working store surface.
+
+    Every method records itself so tests can prove the jobs API never
+    touches it when state is miswired.
+    """
+
+    def __init__(self) -> None:
+        self.accessed: list[str] = []
+
+    def _record(self, name: str) -> None:
+        self.accessed.append(name)
+
+    def list(self):
+        self._record("list")
+        return []
+
+    def get(self, job_id):
+        self._record("get")
+        return None
+
+    def put(self, job):
+        self._record("put")
+        return job
+
+    def delete(self, job_id):
+        self._record("delete")
+        return False
+
+
+def test_api_jobs_uses_correctly_configured_store() -> None:
+    store = JobStore()
+    client = _client(store=store)
+    res = client.post("/api/jobs", json={"target": "pdf-document"})
+    assert res.status_code == 200
+    job_id = res.json()["job_id"]
+    assert store.get(job_id) is not None
+    assert default_job_store().get(job_id) is None
+
+
+def test_api_jobs_fails_closed_for_wrongly_typed_store() -> None:
+    client = TestClient(create_app())
+    poison = _ForeignJobStore()
+    client.app.state.job_store = poison
+
+    res = client.get("/api/jobs")
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+
+    res = client.get("/api/jobs/00000000-0000-0000-0000-000000000000")
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+
+    res = client.post("/api/jobs", json={"target": "pdf-document"})
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+
+    res = client.delete("/api/jobs/00000000-0000-0000-0000-000000000000")
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+
+    res = client.get("/api/jobs/stats")
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+
+    assert poison.accessed == []
+    assert len(default_job_store()) == 0
+
+
+def test_api_jobs_wrong_type_response_exposes_no_internal_details() -> None:
+    client = TestClient(create_app())
+    poison = _ForeignJobStore()
+    client.app.state.job_store = poison
+
+    res = client.get("/api/jobs")
+    assert res.status_code == 503
+    assert "ForeignJobStore" not in res.text
+    assert "job_store" not in res.text
+    assert "Traceback" not in res.text
+    assert "app.state" not in res.text
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+
+
+def test_api_jobs_wrong_type_leaves_bearer_auth_unchanged() -> None:
+    token = "jobs-step-token"
+    client = TestClient(create_app(api_token=token))
+    poison = _ForeignJobStore()
+    client.app.state.job_store = poison
+
+    unauthenticated = client.post("/api/jobs", json={"target": "pdf-document"})
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json() == {
+        "detail": {
+            "error": "unauthorized",
+            "detail": "a valid bearer token is required",
+        }
+    }
+    assert poison.accessed == []
+
+    authenticated = client.post(
+        "/api/jobs",
+        json={"target": "pdf-document"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert authenticated.status_code == 503
+    assert poison.accessed == []
+
+# ---------------------------------------------------------------------------
+# Wrongly typed target-instance store on application state (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+class _ForeignTargetInstanceStore:
+    """A wrong-typed object with a working store surface.
+
+    Every method records itself so tests can prove the jobs API never
+    touches it when state is miswired.
+    """
+
+    def __init__(self) -> None:
+        self.accessed: list[str] = []
+
+    def _record(self, name: str) -> None:
+        self.accessed.append(name)
+
+    def list(self):
+        self._record("list")
+        return []
+
+    def get(self, instance_id):
+        self._record("get")
+        return None
+
+    def put(self, record):
+        self._record("put")
+        return record
+
+    def delete(self, instance_id):
+        self._record("delete")
+        return False
+
+    def update(self, instance_id, record):
+        self._record("update")
+        return None
+
+
+def test_api_jobs_uses_configured_target_instance_store() -> None:
+    """A valid configured target-instance store is used for association."""
+    instances = TargetInstanceStore(capacity=10)
+    client = _instance_client(job_store=JobStore(), instance_store=instances)
+    iid = _create_instance(client, "pdf-document")
+    res = client.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid})
+    assert res.status_code == 200
+    assert res.json()["instance_id"] == iid
+
+
+def test_api_jobs_target_instance_wrong_type_fails_closed() -> None:
+    """A wrong-type target-instance store must not fall back to default.
+
+    Reproduces the audit scenario: an instance exists in the default store,
+    but the app's state is miswired. The job must NOT be associated with
+    that default-store instance; instead the request fails closed with 503.
+    """
+    default_store = default_target_instance_store()
+    # Seed an instance into the default store to create a contamination target.
+    from app.core.orchestrator.target_instances import create_target_instance
+
+    rec = create_target_instance("contam", "pdf-document", store=default_store)
+    contaminated_id = rec.id
+    try:
+        client = TestClient(create_app(job_store=JobStore()))
+        poison = _ForeignTargetInstanceStore()
+        client.app.state.target_instance_store = poison
+
+        res = client.post(
+            "/api/jobs",
+            json={"target": "pdf-document", "instance_id": contaminated_id},
+        )
+        assert res.status_code == 503
+        assert res.json() == {
+            "detail": {
+                "error": "persistence_unavailable",
+                "detail": "target instance storage is temporarily unavailable",
+            }
+        }
+        assert poison.accessed == []
+        # Default store must not have been used as a silent fallback.
+        assert default_store.get(contaminated_id) is not None  # untouched seed
+    finally:
+        default_store.reset()
+
+
+def test_api_jobs_target_instance_wrong_type_no_internal_details() -> None:
+    client = TestClient(create_app(job_store=JobStore()))
+    poison = _ForeignTargetInstanceStore()
+    client.app.state.target_instance_store = poison
+
+    res = client.post(
+        "/api/jobs",
+        json={"target": "pdf-document", "instance_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert res.status_code == 503
+    assert "ForeignTargetInstanceStore" not in res.text
+    assert "target_instance_store" not in res.text
+    assert "Traceback" not in res.text
+    assert "app.state" not in res.text
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "target instance storage is temporarily unavailable",
+        }
+    }
+
+
+def test_api_jobs_target_instance_wrong_type_auth_unchanged() -> None:
+    token = "ti-wrong-type-token"
+    client = TestClient(create_app(api_token=token, job_store=JobStore()))
+    poison = _ForeignTargetInstanceStore()
+    client.app.state.target_instance_store = poison
+
+    unauthenticated = client.post(
+        "/api/jobs",
+        json={"target": "pdf-document", "instance_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json() == {
+        "detail": {
+            "error": "unauthorized",
+            "detail": "a valid bearer token is required",
+        }
+    }
+    assert poison.accessed == []
+
+    authenticated = client.post(
+        "/api/jobs",
+        json={"target": "pdf-document", "instance_id": "00000000-0000-0000-0000-000000000000"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert authenticated.status_code == 503
+    assert poison.accessed == []
+
+
+def test_api_jobs_target_instance_none_store_fallback() -> None:
+    """Missing/None store preserves the historical default-store fallback."""
+    client = TestClient(create_app(job_store=JobStore()))
+    # Simulate unconfigured state (None) â€” should fall back to default store.
+    client.app.state.target_instance_store = None
+
+    # An instance seeded in the default store should be resolvable.
+    default_store = default_target_instance_store()
+    from app.core.orchestrator.target_instances import create_target_instance
+
+    rec = create_target_instance("none-fallback", "pdf-document", store=default_store)
+    iid = rec.id
+    try:
+        res = client.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid})
+        assert res.status_code == 200
+        assert res.json()["instance_id"] == iid
+    finally:
+        default_store.reset()

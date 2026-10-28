@@ -35,11 +35,47 @@ Only from an environment that has passed the full suite:
    required by pip).
 3. Verify before committing:
    `python -m pip install --require-hashes --dry-run --ignore-installed -r requirements.lock`
-   must succeed (fresh-environment simulation) and
-   `tests/test_deployment_artifacts.py` must pass.
+   must succeed (fresh-environment simulation),
+   `python scripts/check_dependency_lock.py` must print "Dependency lock
+   consistency check passed.", and `tests/test_deployment_artifacts.py`
+   must pass.
 4. Action SHAs and the Docker base digest are pinned in `ci.yml` /
    `Dockerfile`; refresh them the same way (GitHub API tag deref,
    `docker buildx imagetools inspect`) when bumping versions.
+
+## Dependency updates (Dependabot)
+
+`.github/dependabot.yml` configures weekly Dependabot proposals for three
+ecosystems that have real manifests in this repository:
+
+* `github-actions` (`.github/workflows/ci.yml`) - Dependabot updates each
+  action to the new release's full commit SHA and refreshes the trailing
+  version comment.  Full-SHA pinning is preserved; no tag-pinned action
+  is introduced.
+* `pip` (`pyproject.toml`) - Dependabot proposes version-range bumps for
+  the runtime and test dependencies.
+* `docker` (`Dockerfile`) - Dependabot proposes digest bumps for the
+  `python:3.13-slim` base image, keeping the `sha256:` digest pin.
+
+### Limitation: hash-pinned `requirements.lock`
+
+Dependabot does **not** regenerate the custom hash-pinned
+`requirements.lock` (pip-compile style with `--hash=sha256:` lines) or
+`constraints.txt`.  A Dependabot Python PR therefore bumps the ranges in
+`pyproject.toml` only; CI still installs from the unchanged
+`requirements.lock`, so such a PR can look green while the lockfile is
+stale.
+
+Before merging any Dependabot Python PR, a maintainer must regenerate
+the lock by hand following "Regenerating the pins" above:
+
+1. Update `constraints.txt` pins from a verified environment.
+2. Rebuild `requirements.lock` with every artifact hash.
+3. Run `python -m pip install --require-hashes --dry-run --ignore-installed -r requirements.lock`.
+4. Run the full suite, Ruff, mypy, `git diff --check`, and
+   `tests/test_deployment_artifacts.py`.
+
+Nothing is auto-merged: every proposal must pass CI and be reviewed.
 
 ## Everyday commands
 

@@ -242,6 +242,280 @@ def test_readme_documents_docker_and_ci_workflow() -> None:
 _MYPY_STEP = "python -m mypy app/api app/engines"
 
 
+def test_dependabot_config_proposes_updates_without_auto_merge() -> None:
+    text = Path(".github/dependabot.yml").read_text(encoding="utf-8")
+    assert "version: 2" in text
+    for ecosystem in ("github-actions", "pip"):
+        assert ecosystem in text, ecosystem
+    assert "schedule:" in text
+    # Nothing is auto-merged: proposals must pass CI and be reviewed.
+    lowered = text.lower()
+    assert "automerge" not in lowered
+    assert "auto-merge" not in lowered
+    # Supply-chain pinning is not relaxed by the updater config.
+    assert "allow-external" not in lowered
+    assert "insecure-external-code-execution" not in lowered
+
+
+def _load_checker():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_dependency_lock", "scripts/check_dependency_lock.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dependency_lock_checker_passes_on_real_repository() -> None:
+    checker = _load_checker()
+    errors = checker.check_lock(
+        checker.PYPROJECT, checker.LOCKFILE
+    )
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_detects_missing_package(tmp_path: Path) -> None:
+    checker = _load_checker()
+    import textwrap
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ["definitely-not-a-real-package>=1.0"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("fastapi==0.116.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pyproject, lock)
+    assert any("definitely-not-a-real-package" in e and "not found" in e for e in errors)
+
+
+def test_dependency_lock_checker_detects_version_mismatch(tmp_path: Path) -> None:
+    checker = _load_checker()
+    import textwrap
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ["fastapi>=999.0"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("fastapi==0.116.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pyproject, lock)
+    assert any("fastapi" in e and "does not satisfy" in e for e in errors)
+
+
+def test_dependency_lock_checker_normalizes_package_names(tmp_path: Path) -> None:
+    checker = _load_checker()
+    import textwrap
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ["Pydantic>=2.0"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("pydantic==2.11.7 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pyproject, lock)
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_handles_matching_pinned_version(tmp_path: Path) -> None:
+    checker = _load_checker()
+    import textwrap
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ["fastapi==0.116.1"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("fastapi==0.116.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pyproject, lock)
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_skips_non_applicable_markers(tmp_path: Path) -> None:
+    checker = _load_checker()
+    import textwrap
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ['nonexistent-pkg>=1.0; python_version < "1.0"']
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("", encoding="utf-8")
+    errors = checker.check_lock(pyproject, lock)
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_includes_optional_dependencies(tmp_path: Path) -> None:
+    checker = _load_checker()
+    import textwrap
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = []
+
+            [project.optional-dependencies]
+            test = ["pytest>=8.0"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("pytest==8.4.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pyproject, lock)
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_extra_marker_applicable_missing_package() -> None:
+    """extra == 'test' marker is applicable when 'test' is a declared extra."""
+    checker = _load_checker()
+    import textwrap
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    pp = Path(d) / "pyproject.toml"
+    pp.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ["missing-extra-pkg>=1.0; extra == 'test'"]
+
+            [project.optional-dependencies]
+            test = ["pytest>=8.0"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = Path(d) / "requirements.lock"
+    lock.write_text("pytest==8.4.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pp, lock)
+    assert any("missing-extra-pkg" in e and "not found" in e for e in errors), errors
+
+
+def test_dependency_lock_checker_extra_marker_not_applicable() -> None:
+    """extra == 'dev' marker is skipped when 'dev' is not a declared extra."""
+    checker = _load_checker()
+    import textwrap, tempfile
+    from pathlib import Path
+
+    d = tempfile.mkdtemp()
+    pp = Path(d) / "pyproject.toml"
+    pp.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ["missing-dev-pkg>=1.0; extra == 'dev'"]
+
+            [project.optional-dependencies]
+            test = ["pytest>=8.0"]
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = Path(d) / "requirements.lock"
+    lock.write_text("pytest==8.4.1 \\\n    --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    errors = checker.check_lock(pp, lock)
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_normal_marker_still_works() -> None:
+    checker = _load_checker()
+    import textwrap, tempfile
+    from pathlib import Path
+
+    d = tempfile.mkdtemp()
+    pp = Path(d) / "pyproject.toml"
+    pp.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "x"
+            version = "0.0.0"
+            dependencies = ['missing-py-pkg>=1.0; python_version < "1.0"']
+            """
+        ),
+        encoding="utf-8",
+    )
+    lock = Path(d) / "requirements.lock"
+    lock.write_text("", encoding="utf-8")
+    errors = checker.check_lock(pp, lock)
+    assert errors == [], errors
+
+
+def test_dependency_lock_checker_marker_eval_failure_is_conservative() -> None:
+    """A marker that raises during evaluation must not be silently skipped.
+
+    Exercises the conservative branch of ``_marker_applies`` directly: when
+    ``Marker.evaluate`` raises, the requirement is treated as applicable
+    (checked against the lock) rather than silently skipped.
+    """
+    checker = _load_checker()
+    from packaging.markers import Marker
+    from packaging.requirements import Requirement
+
+    req = Requirement("missing-conservative>=1.0; python_version >= '3.0'")
+    original_evaluate = Marker.evaluate
+
+    def boom(self, environment=None):
+        raise RuntimeError("boom")
+
+    Marker.evaluate = boom
+    try:
+        assert checker._marker_applies(req, set()) is True
+    finally:
+        Marker.evaluate = original_evaluate
+
+
 def test_ci_runs_the_scoped_mypy_gate_after_ruff() -> None:
     text = _CI_WORKFLOW.read_text(encoding="utf-8")
     assert _MYPY_STEP in text, "CI must run the scoped mypy gate"

@@ -43,10 +43,27 @@ __all__ = ["router"]
 
 
 def _get_store(request: Request) -> TargetInstanceStore:
+    """The target-instance store bound to this application (Step 12).
+
+    An absent store keeps the historical fallback to the process-wide
+    default (unconfigured state).  A store that is present but fails the
+    ``TargetInstanceStore`` type check means application state was
+    miswired: the request fails closed with the shared generic ``503
+    persistence_unavailable`` detail - never the offending object's class
+    name, repr or path - and the foreign object is never read or written,
+    so it can neither contaminate the default store nor crash a handler
+    with a raw attribute error.
+    """
+
     store = getattr(request.app.state, "target_instance_store", None)
-    if store is not None:
-        return store
-    return default_target_instance_store()
+    if store is None:
+        return default_target_instance_store()
+    if not isinstance(store, TargetInstanceStore):
+        raise HTTPException(
+            status_code=503,
+            detail=persistence_unavailable_detail("target instance"),
+        )
+    return store
 
 
 def _to_response(record: TargetInstanceRecord) -> TargetInstance:

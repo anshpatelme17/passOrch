@@ -46,10 +46,18 @@ def resolve_target_instance(
     """The stored record for ``instance_id``, else ``None``.
 
     Malformed and unknown identifiers return ``None`` identically - no caller
-    can distinguish them.
+    can distinguish them.  An omitted or ``None`` store keeps the historical
+    fallback to the process-wide default; an explicitly supplied object that
+    is not a ``TargetInstanceStore`` is rejected with ``ValueError`` rather
+    than silently using the default store.
     """
 
-    effective = store if isinstance(store, TargetInstanceStore) else default_target_instance_store()
+    if store is None:
+        effective = default_target_instance_store()
+    elif not isinstance(store, TargetInstanceStore):
+        raise ValueError("store must be a TargetInstanceStore")
+    else:
+        effective = store
     return effective.get(instance_id)
 
 
@@ -67,6 +75,10 @@ def create_target_instance(
     ``instance_id`` is a canonical lowercase UUID (freshly minted unless
     supplied); ``created_at`` is the epoch second from ``clock`` (real time by
     default).  Structural and duplicate failures raise from ``store.put``.
+    An omitted or ``None`` store keeps the historical fallback to the
+    process-wide default; an explicitly supplied object that is not a
+    ``TargetInstanceStore`` is rejected with ``ValueError`` rather than
+    silently using the default store.
     """
 
     if not isinstance(name, str) or not name.strip():
@@ -85,7 +97,12 @@ def create_target_instance(
         created_at=now(),
     )
 
-    effective = store if isinstance(store, TargetInstanceStore) else default_target_instance_store()
+    if store is None:
+        effective = default_target_instance_store()
+    elif not isinstance(store, TargetInstanceStore):
+        raise ValueError("store must be a TargetInstanceStore")
+    else:
+        effective = store
     return effective.put(record)
 
 
@@ -106,10 +123,19 @@ def update_target_instance(
     :class:`~app.engines.target_instances.InvalidTargetInstanceError`
     from the store; an empty patch (no mutable field supplied) raises
     ``ValueError``.  No process execution, no discovery, no engine
-    invocation - the store remains the single gate.
+    invocation - the store remains the single gate.  An omitted or ``None``
+    store keeps the historical fallback to the process-wide default; an
+    explicitly supplied object that is not a ``TargetInstanceStore`` is
+    rejected with ``ValueError`` rather than silently using the default
+    store.
     """
 
     if name is None and description is None:
         raise ValueError("at least one of name or description is required")
-    effective = store if isinstance(store, TargetInstanceStore) else default_target_instance_store()
+    if store is None:
+        effective = default_target_instance_store()
+    elif not isinstance(store, TargetInstanceStore):
+        raise ValueError("store must be a TargetInstanceStore")
+    else:
+        effective = store
     return effective.update(instance_id, name=name, description=description)

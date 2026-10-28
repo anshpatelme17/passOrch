@@ -44,6 +44,23 @@ class _ExplodingInstanceStore(TargetInstanceStore):
         raise RuntimeError("boom internals must never reach the client")
 
 
+# -- wrongly typed stores (readiness hardening) ------------------------------- #
+
+
+class _ForeignJobStore:
+    """A wrong-typed object with a working ``list()`` that must not pass."""
+
+    def list(self):
+        return []
+
+
+class _ForeignInstanceStore:
+    """A wrong-typed object with a working ``list()`` that must not pass."""
+
+    def list(self):
+        return []
+
+
 def test_health_response_is_exactly_the_documented_liveness_body() -> None:
     client = TestClient(
         create_app(job_store=JobStore(), target_instance_store=TargetInstanceStore())
@@ -88,6 +105,54 @@ def test_readiness_answers_generic_503_when_a_store_fails() -> None:
         text = response.text.lower()
         for leaked in ("sqlite", "traceback", "secret.db", "no such table", "boom internals"):
             assert leaked not in text
+
+
+def test_readiness_answers_generic_503_for_wrongly_typed_stores() -> None:
+    """A foreign object with a working list() must not make readiness healthy.
+
+    Readiness must fail closed on a type mismatch, not call into the foreign
+    object (which could be a miswired store, a different subsystem, or an
+    attacker-controlled object placed on application state).
+    """
+
+    # Mutate state post-construction to simulate a miswired application.
+    client = TestClient(
+        create_app(job_store=JobStore(), target_instance_store=TargetInstanceStore())
+    )
+    client.app.state.target_instance_store = _ForeignInstanceStore()
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {"error": "not_ready", "detail": "readiness probe failed"}
+    }
+    text = response.text.lower()
+    for leaked in ("foreign", "traceback", "typeerror", "target_instance_store"):
+        assert leaked not in text
+
+    client = TestClient(
+        create_app(job_store=JobStore(), target_instance_store=TargetInstanceStore())
+    )
+    client.app.state.job_store = _ForeignJobStore()
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {"error": "not_ready", "detail": "readiness probe failed"}
+    }
+    text = response.text.lower()
+    for leaked in ("foreign", "traceback", "typeerror", "job_store"):
+        assert leaked not in text
+
+    # Both wrong at once.
+    client = TestClient(
+        create_app(job_store=JobStore(), target_instance_store=TargetInstanceStore())
+    )
+    client.app.state.job_store = _ForeignJobStore()
+    client.app.state.target_instance_store = _ForeignInstanceStore()
+    response = client.get("/health/ready")
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": {"error": "not_ready", "detail": "readiness probe failed"}
+    }
 
 
 def test_readiness_probe_never_writes_or_opens_the_database(tmp_path: Path) -> None:

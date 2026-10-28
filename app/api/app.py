@@ -352,8 +352,14 @@ def create_app(
         """
 
         try:
-            application.state.job_store.list()
-            application.state.target_instance_store.list()
+            job_store = application.state.job_store
+            if not isinstance(job_store, JobStore):
+                raise TypeError("job store has an invalid type")
+            target_store = application.state.target_instance_store
+            if not isinstance(target_store, TargetInstanceStore):
+                raise TypeError("target instance store has an invalid type")
+            job_store.list()
+            target_store.list()
         except Exception:
             return JSONResponse(
                 status_code=503,

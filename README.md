@@ -114,7 +114,7 @@ or per application: `create_app(job_db_path="data/jobs.db")` (mutually exclusive
   ```
 
 - **Lifecycle**: the database is created and validated when a store opens; an unusable, corrupt or newer-schema file fails fast with `JobPersistenceError` / `InstancePersistenceError` instead of silently falling back to memory-only. The newest records (store capacity, default 100) reload on open in insertion order and older rows are pruned; deletions and FIFO evictions remove their rows as well.
-- **Failure behaviour**: a failed job or target-instance write or delete answers `HTTP 503` with `{"error": "persistence_unavailable", ...}` — no SQL text, file paths or driver messages are exposed, and a failed write never appears in a list. Reads are served from memory and never touch the database.
+- **Failure behaviour**: a failed job or target-instance write or delete answers `HTTP 503` with `{"detail": {"error": "persistence_unavailable", ...}}` — no SQL text, file paths or driver messages are exposed, and a failed write never appears in a list. Reads are served from memory and never touch the database.
 - **Instance deletion**: deleting a target instance removes its rows only; recorded jobs keep their immutable instance snapshot.
 - **Limits**: each store hydrates once at construction, so two processes sharing one file do not see each other's writes live. Tests use temporary directories and never write into the repository.
 
@@ -130,9 +130,9 @@ export PASSORCH_MAX_BODY_BYTES=65536
 
 or per application: `create_app(rate_limit=120, rate_window_seconds=60, max_body_bytes=65536)` — explicit arguments win over the environment variables, and an invalid or non-positive value fails fast with `ValueError` at construction instead of silently disabling the guard.
 
-- **Over the limit**: `HTTP 429` with a `Retry-After` header and a structured body `{"error": "rate_limited", "detail": "too many requests", "retry_after": N}`; no internals are exposed.
-- **Oversized body**: `HTTP 413` with `{"error": "payload_too_large", "detail": "request body exceeds the configured size limit"}`; the rejected body never reaches a handler.
-- **Chunked framing**: state-changing requests that carry `Transfer-Encoding` are rejected with `HTTP 400` and `{"error": "unsupported_transfer_encoding", "detail": "transfer-encoded request bodies are not supported"}` before any body byte is read — chunked uploads cannot bypass the `Content-Length` cap and are unsupported by design.
+- **Over the limit**: `HTTP 429` with a `Retry-After` header and a structured body `{"detail": {"error": "rate_limited", "detail": "too many requests", "retry_after": N}}`; no internals are exposed.
+- **Oversized body**: `HTTP 413` with `{"detail": {"error": "payload_too_large", "detail": "request body exceeds the configured size limit"}}`; the rejected body never reaches a handler.
+- **Chunked framing**: state-changing requests that carry `Transfer-Encoding` are rejected with `HTTP 400` and `{"detail": {"error": "unsupported_transfer_encoding", "detail": "transfer-encoded request bodies are not supported"}}` before any body byte is read — chunked uploads cannot bypass the `Content-Length` cap and are unsupported by design.
 - **Additive, not instead**: guards run before route validation and the execution policy — a rejected request records nothing, and allowing a request never relaxes validation, the execution policy or persistence checks.
 - **Client key**: the socket peer address. `X-Forwarded-For` is deliberately ignored by default because it is spoofable without a trusted proxy in front; put a real reverse proxy with its own limits in front of the app for internet exposure. Operators who run behind a known reverse proxy can pin an exact-IP trust anchor with `PASSORCH_TRUSTED_PROXIES` (comma-separated exact IPs) or `create_app(trusted_proxies=...)` — see **Trusted proxies** below.
 - **Limits**: counters are process-local — restarting clears them and separate worker processes do not share them — and the per-address table is bounded (newest 1000 addresses tracked; evicting an old address resets its counter). A mutation with neither `Content-Length` nor `Transfer-Encoding` is treated as bodyless (empty-body `DELETE` stays supported).
@@ -158,7 +158,7 @@ export PASSORCH_API_TOKEN=$(python -c "import secrets; print(secrets.token_urlsa
 or per application: `create_app(api_token="...")` — an explicit argument wins over the environment variable.
 
 - **Scope**: only state-changing requests (`POST` / `PUT` / `PATCH` / `DELETE`) require `Authorization: Bearer <token>`. Reads — including `/health` and all list endpoints — stay unauthenticated: they are side-effect free and the browser frontend has no token store, so a token-protected deployment is aimed at API/automation clients (put a token-aware client or reverse proxy in front for the SPA).
-- **Rejections**: a missing, malformed or wrong credential gets one identical generic `401` with a `WWW-Authenticate: Bearer` header and `{"error": "unauthorized", "detail": "a valid bearer token is required"}` — the token itself is never echoed, logged, or placed on application state.
+- **Rejections**: a missing, malformed or wrong credential gets one identical generic `401` with a `WWW-Authenticate: Bearer` header and `{"detail": {"error": "unauthorized", "detail": "a valid bearer token is required"}}` — the token itself is never echoed, logged, or placed on application state.
 - **Comparison**: `secrets.compare_digest` (constant time). An explicitly passed blank token fails fast with `ValueError`; an empty `PASSORCH_API_TOKEN` counts as unset (authentication stays off).
 - **Authentication is not authorization**: a valid token never bypasses route validation, `ExecutionPolicy.authorize`, persistence checks, or the rate limiter — the rate limit is checked *before* authentication, so credential guessing is rate-limited too.
 
@@ -201,7 +201,7 @@ docker compose down -v     # ...or also delete the stored database
 
 ## Operations
 
-- **Health semantics**: `GET /health` returns exactly `{"status": "ok", "mode": "simulated"}`. It is a *liveness* probe — unauthenticated by design, side-effect free (it never touches the database, discovery, or engines), and it exposes no paths, tokens, or tracebacks. `GET /health/ready` is the *readiness* probe: it additionally lists each configured store once (a pure in-memory read — persistent stores hydrate at construction, so the probe never opens SQLite or writes anything) and answers `200` with the same body, or one generic `503 {"error": "not_ready", "detail": "readiness probe failed"}` when a store fails, with no exception text, SQL, path or traceback. Startup failures (unusable database, invalid schema, bad security configuration) still stop the process before it can answer either probe.
+- **Health semantics**: `GET /health` returns exactly `{"status": "ok", "mode": "simulated"}`. It is a *liveness* probe — unauthenticated by design, side-effect free (it never touches the database, discovery, or engines), and it exposes no paths, tokens, or tracebacks. `GET /health/ready` is the *readiness* probe: it additionally lists each configured store once (a pure in-memory read — persistent stores hydrate at construction, so the probe never opens SQLite or writes anything) and answers `200` with the same body, or one generic `503 {"detail": {"error": "not_ready", "detail": "readiness probe failed"}}` when a store fails, with no exception text, SQL, path or traceback. Startup failures (unusable database, invalid schema, bad security configuration) still stop the process before it can answer either probe.
 - **Logging**: operational request logging comes from uvicorn's access and error logs (method, path, status, duration; full server-side traceback for unhandled 500s). The application modules themselves **never log** — this is a tested security contract, so bearer tokens, authorization headers, request bodies, and database paths cannot reach stdout or a log file. Client-facing errors stay generic; runtime persistence failures surface as structured `503 persistence_unavailable` responses, while startup persistence failures stop the process with a server-side traceback.
 - **Shutdown**: `docker stop` sends SIGTERM, which uvicorn handles as a graceful shutdown; persisted records live on the volume, not in the container. Stopping or recreating the container never deletes the configured database (only `docker compose down -v` removes the volume).
 - **Backup and restore**: use `backup_database` (see **Persistence**) — the SQLite online-backup API copies a live database consistently; reverse the arguments to restore. Back up the configured file (in a container: `docker compose exec` or a volume snapshot) before upgrades.
@@ -218,6 +218,12 @@ docker compose down -v     # ...or also delete the stored database
 5. Frontend harness via its verified invocation (`python -m pytest tests/test_frontend_js_execution.py`, which needs Node.js 20+).
 
 CI needs no repository secrets and must not be granted any.
+
+Dependabot (`.github/dependabot.yml`) proposes weekly updates for GitHub
+Actions, Python dependencies, and the Docker base image; nothing is
+auto-merged. Python proposals bump `pyproject.toml` ranges only - the
+hash-pinned `requirements.lock` must be regenerated by hand before merge
+(see `docs/DEVELOPMENT.md`).
 
 ## Testing
 

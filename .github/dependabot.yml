@@ -1,0 +1,46 @@
+# Dependabot configuration for PassOrch.
+#
+# Proposes dependency updates via pull requests.  No proposal is merged
+# automatically:
+# every proposal must pass the CI workflow (tests, Ruff, mypy, whitespace
+# check, deployment-artifact contracts) and be reviewed before merge.
+#
+# Supply-chain posture is preserved:
+#   * GitHub Actions stay pinned to full commit SHAs (Dependabot updates the
+#     SHA and the trailing version comment together).
+#   * Python dependencies stay hash-pinned in requirements.lock; Dependabot
+#     proposes version-range bumps in pyproject.toml only (see the limitation
+#     documented in docs/DEVELOPMENT.md).  It never removes --require-hashes.
+#   * Docker base images stay digest-pinned.
+version: 2
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
