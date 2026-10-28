@@ -40,7 +40,7 @@ mypy==2.4.0
 mypy-extensions==1.1.0
 packaging==26.2
 pathspec==1.1.1
-pluggy==1.6.0
+pluggy==1.7.0
 pydantic==2.11.7
 pydantic-core==2.33.2
 pytest==8.4.1
