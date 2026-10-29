@@ -43,6 +43,7 @@ touches job rows: recorded jobs keep their immutable instance snapshot.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from app.engines.persistence import (
@@ -171,6 +172,32 @@ class _InstanceDatabase:
             on_integrity=DuplicateTargetInstanceError(record.id),
         )
 
+    def insert_instance_with_eviction(
+        self, record: TargetInstanceRecord, victim_id: str
+    ) -> None:
+        """Insert ``record`` and delete the FIFO victim row in ONE transaction.
+
+        Both statements run on the same connection so the mirror change is
+        all-or-nothing: a failure at either stage (especially the
+        victim-row delete) rolls the insert back too, leaving the database
+        with neither the new row nor the stale victim row.  The put
+        compensation path then restores the in-memory view to match.
+
+        The transaction commits only after both statements succeed.  The
+        driver raises for the insert's uniqueness conflict is mapped here
+        to the domain duplicate error (``transaction`` itself maps any
+        other driver failure onto the generic ``failure`` message); the
+        exception still trips the rollback before it propagates.
+        """
+
+        payload = _record_to_payload(record)
+        with self._db.transaction(_WRITE_FAILED) as connection:
+            try:
+                connection.execute(_INSERT_INSTANCE_SQL, (record.id, payload))
+            except sqlite3.IntegrityError as exc:
+                raise DuplicateTargetInstanceError(record.id) from exc
+            connection.execute(_DELETE_INSTANCE_SQL, (victim_id,))
+
     def delete_instance(self, instance_id: str) -> bool:
         return (
             self._db.write(_DELETE_INSTANCE_SQL, (instance_id,), failure=_DELETE_FAILED) > 0
@@ -209,7 +236,9 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
     database at ``db_path``; a failed mirror write raises
     :class:`InstancePersistenceError` and leaves the in-memory view
     truthful (a failed ``put`` rolls back its own insert, a failed
-    ``delete`` removes nothing).
+    ``delete`` removes nothing).  An eviction-bearing ``put`` mirrors its
+    insert and FIFO-row delete as one atomic transaction, so neither view
+    can report a row the other never saw.
 
     Opening happens in the constructor: the schema is brought to the
     current version (running any pending Phase 8C migrations, stamping
@@ -245,10 +274,14 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
         """Store a target instance in memory and in the database.
 
         Validation is the base class contract (identical exceptions for
-        malformed or duplicate instances).  If the mirrored insert fails
+        malformed or duplicate instances).  If the mirrored write fails
         after the in-memory insert, memory is rolled back - including
         restoring any FIFO victim the insert evicted - so neither view
-        reports a write that the other side never saw.
+        reports a write that the other side never saw.  When the insert
+        also evicts a FIFO victim, the mirror (new row insert + victim
+        row delete) is one atomic SQLite transaction: a failure at either
+        stage rolls the insert back, so the stale victim row can never
+        linger committed.
         """
 
         with self._lock:
@@ -262,15 +295,16 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
                 victim = (first_id, first_instance)
             stored = super().put(instance)
             try:
-                self._db.insert_instance(stored)
+                if victim is not None:
+                    self._db.insert_instance_with_eviction(stored, victim[0])
+                else:
+                    self._db.insert_instance(stored)
             except (InstancePersistenceError, DuplicateTargetInstanceError):
                 self._instances.pop(stored.id, None)
                 if victim is not None and victim[0] not in self._instances:
                     self._instances[victim[0]] = victim[1]
                     self._instances.move_to_end(victim[0], last=False)
                 raise
-            if victim is not None:
-                self._db.delete_instance(victim[0])
             return stored
 
     def delete(self, instance_id: object) -> bool:

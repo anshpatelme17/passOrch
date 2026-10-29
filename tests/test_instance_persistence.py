@@ -658,10 +658,10 @@ def test_put_failure_compensates_memory_including_the_fifo_victim(
     store = PersistentTargetInstanceStore(db, capacity=1)
     first = create_target_instance("first", "pdf-document", "", store=store)
 
-    def _explode(record: TargetInstanceRecord) -> None:
+    def _explode(record: TargetInstanceRecord, victim_id: str) -> None:
         raise InstancePersistenceError("failed to write an instance record")
 
-    monkeypatch.setattr(store._db, "insert_instance", _explode)
+    monkeypatch.setattr(store._db, "insert_instance_with_eviction", _explode)
     second = TargetInstanceRecord(
         id=str(uuid.uuid4()),
         name="second",
@@ -697,6 +697,120 @@ def test_duplicate_row_compensates_the_memory_copy_on_put(tmp_path: Path) -> Non
     with pytest.raises(DuplicateTargetInstanceError):
         store.put(record)
     assert store.get(record.id) is None
+
+
+# --------------------------------------------------------------------------- #
+# atomic eviction mirror: insert + FIFO-row delete in ONE transaction
+# --------------------------------------------------------------------------- #
+
+
+def test_eviction_delete_failure_rolls_the_insert_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed victim-row delete must not leave the new row committed.
+
+    The fault is injected at the SQL layer (a statement against a
+    nonexistent table) so the real sqlite driver fails during the
+    eviction stage of the combined transaction, exercising its actual
+    rollback behaviour instead of mocking the whole operation.
+    """
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db, capacity=2)
+    older = create_target_instance("older", "pdf-document", "", store=store)
+    newer = create_target_instance("newer", "zip-archive", "", store=store)
+
+    monkeypatch.setattr(
+        "app.engines.instance_persistence._DELETE_INSTANCE_SQL",
+        "DELETE FROM no_such_table WHERE instance_id = ?",
+    )
+    fresh = TargetInstanceRecord(
+        id=str(uuid.uuid4()),
+        name="fresh",
+        target_type="zip-archive",
+        description="",
+        created_at=1,
+    )
+    with pytest.raises(InstancePersistenceError):
+        store.put(fresh)
+
+    # memory: exactly the original two instances, FIFO order intact
+    assert [item.id for item in store.list()] == [older.id, newer.id]
+    assert store.get(fresh.id) is None
+    # sqlite: exactly the original two rows - the rolled-back insert left
+    # no new row and removed no victim row
+    assert _instance_row_count(db) == 2
+    connection = sqlite3.connect(db)
+    try:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM passorch_instances WHERE instance_id = ?",
+            (fresh.id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None and int(row[0]) == 0
+
+    monkeypatch.undo()
+    # the store remains fully usable after the failed attempt
+    store.put(fresh)
+    assert [item.id for item in store.list()] == [newer.id, fresh.id]
+    assert _instance_row_count(db) == 2
+
+
+def test_eviction_insert_failure_inside_the_combined_operation_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing insert inside the combined operation changes nothing."""
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db, capacity=2)
+    older = create_target_instance("older", "pdf-document", "", store=store)
+    newer = create_target_instance("newer", "zip-archive", "", store=store)
+
+    monkeypatch.setattr(
+        "app.engines.instance_persistence._INSERT_INSTANCE_SQL",
+        "INSERT INTO no_such_table (instance_id, payload) VALUES (?, ?)",
+    )
+    fresh = TargetInstanceRecord(
+        id=str(uuid.uuid4()),
+        name="fresh",
+        target_type="zip-archive",
+        description="",
+        created_at=1,
+    )
+    with pytest.raises(InstancePersistenceError):
+        store.put(fresh)
+
+    assert [item.id for item in store.list()] == [older.id, newer.id]
+    assert store.get(fresh.id) is None
+    assert _instance_row_count(db) == 2
+
+
+def test_successful_eviction_put_removes_the_oldest_row_in_both_views(
+    tmp_path: Path,
+) -> None:
+    """A successful third put evicts the oldest record in memory and SQLite."""
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db, capacity=2)
+    first = create_target_instance("first", "pdf-document", "", store=store)
+    second = create_target_instance("second", "zip-archive", "", store=store)
+    third = TargetInstanceRecord(
+        id=str(uuid.uuid4()),
+        name="third",
+        target_type="zip-archive",
+        description="",
+        created_at=1,
+    )
+    store.put(third)
+
+    assert [item.id for item in store.list()] == [second.id, third.id]
+    assert store.get(first.id) is None
+    assert _instance_row_count(db) == 2
+
+    reopened = PersistentTargetInstanceStore(db, capacity=2)
+    assert [item.id for item in reopened.list()] == [second.id, third.id]
+    assert reopened.get(first.id) is None
 
 
 def test_out_of_band_row_removal_reads_as_missing(tmp_path: Path) -> None:
