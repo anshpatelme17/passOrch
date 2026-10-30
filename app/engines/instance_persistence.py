@@ -35,8 +35,9 @@ Contract, mirroring the job module exactly:
 
 Rows are keyed by an autoincrement ``seq`` so hydration restores the
 exact insertion order (oldest-first listing, FIFO-by-insertion eviction);
-opening prunes any row beyond ``capacity``, which also self-heals the
-rare case of a partially failed write.  Deleting an instance never
+opening prunes any row beyond ``capacity`` once every hydrated record has
+validated (a failed construction deletes nothing), which also self-heals
+the rare case of a partially failed write.  Deleting an instance never
 touches job rows: recorded jobs keep their immutable instance snapshot.
 """
 
@@ -45,6 +46,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import NamedTuple
 
 from app.engines.persistence import (
     PersistenceDatabase,
@@ -148,6 +150,18 @@ def _record_from_payload(payload: object) -> TargetInstanceRecord:
 # --------------------------------------------------------------------------- #
 
 
+class _Hydration(NamedTuple):
+    """Parsed records to hydrate, plus the ``seq`` below which rows may prune.
+
+    Returned instead of pruning in-place so store construction can
+    validate every record *before* any destructive write: a failed
+    construction must never have deleted rows.
+    """
+
+    records: tuple[TargetInstanceRecord, ...]
+    prune_below_seq: int | None
+
+
 class _InstanceDatabase:
     """The ``passorch_instances`` table behind :class:`PersistentTargetInstanceStore`."""
 
@@ -210,14 +224,31 @@ class _InstanceDatabase:
             > 0
         )
 
-    def load_instances(self, capacity: int) -> tuple[TargetInstanceRecord, ...]:
+    def load_instances(self, capacity: int) -> _Hydration:
+        """Read and parse the newest ``capacity`` rows - no pruning here.
+
+        The ``seq`` cutoff for any excess rows is returned instead of
+        being deleted inside this transaction: pruning happens only
+        after every hydrated record has passed base-class validation
+        (store construction), so a failed construction can never have
+        removed rows from the database.
+        """
+
         with self._db.transaction(_READ_FAILED) as connection:
             rows = connection.execute(_SELECT_INSTANCES_SQL).fetchall()
+            prune_below_seq: int | None = None
             if len(rows) > capacity:
-                cutoff_seq = rows[len(rows) - capacity][0]
-                connection.execute(_PRUNE_INSTANCES_SQL, (cutoff_seq,))
+                prune_below_seq = rows[len(rows) - capacity][0]
                 rows = rows[len(rows) - capacity :]
-            return tuple(_record_from_payload(payload) for _, payload in rows)
+            return _Hydration(
+                records=tuple(_record_from_payload(payload) for _, payload in rows),
+                prune_below_seq=prune_below_seq,
+            )
+
+    def prune_before(self, cutoff_seq: int) -> None:
+        """Delete every row older than ``cutoff_seq`` (post-validation only)."""
+
+        self._db.write(_PRUNE_INSTANCES_SQL, (cutoff_seq,), failure=_DELETE_FAILED)
 
     def clear(self) -> None:
         self._db.write(_CLEAR_INSTANCES_SQL, (), failure=_CLEAR_FAILED)
@@ -243,9 +274,11 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
     Opening happens in the constructor: the schema is brought to the
     current version (running any pending Phase 8C migrations, stamping
     ``PRAGMA user_version``) and the newest ``capacity`` rows are
-    hydrated in insertion order.  An unusable, corrupt, newer-schema or
-    invalid database raises ``InstancePersistenceError`` instead of
-    silently starting empty.
+    hydrated in insertion order; any row beyond ``capacity`` is pruned
+    only **after** every hydrated record has passed base-class
+    validation, so a construction that fails never deletes rows.  An
+    unusable, corrupt, newer-schema or invalid database raises
+    ``InstancePersistenceError`` instead of silently starting empty.
     """
 
     def __init__(
@@ -258,11 +291,17 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
         self._db = _InstanceDatabase(validated)
         self._db.open(_INIT_FAILED)
         with self._lock:
-            for record in self._db.load_instances(self._capacity):
+            hydration = self._db.load_instances(self._capacity)
+            for record in hydration.records:
                 try:
                     super().put(record)
                 except TargetInstanceError as exc:
                     raise InstancePersistenceError(_INVALID_RECORD) from exc
+            # Prune only after every hydrated record passed base-class
+            # validation: a failed construction must never have deleted
+            # rows (the prune is the one destructive hydration step).
+            if hydration.prune_below_seq is not None:
+                self._db.prune_before(hydration.prune_below_seq)
 
     @property
     def db_path(self) -> Path:

@@ -463,6 +463,68 @@ def test_capacity_hydration_keeps_newest_and_prunes_database(tmp_path: Path) -> 
     assert _instance_row_count(db) == 1
 
 
+def test_validation_failure_during_hydration_never_prunes_rows(
+    tmp_path: Path,
+) -> None:
+    """A construction that fails validation must not have deleted rows.
+
+    The newest retained row is tampered with so it still *parses* (plain
+    string fields) but fails the base class's target-type validation.
+    Opening with a smaller capacity must raise without pruning the older
+    rows - the destructive prune runs only after every hydrated record
+    has validated.
+    """
+
+    db = tmp_path / "instances.db"
+    seeding = PersistentTargetInstanceStore(db, capacity=5)
+    originals = [
+        create_target_instance(f"record-{index}", "pdf-document", "", store=seeding)
+        for index in range(1, 5)
+    ]
+
+    # tamper the NEWEST row at the SQL layer: the unmapped target type
+    # parses fine but super().put() rejects it
+    newest = originals[-1]
+    tampered = json.loads(_fetch_instance_payload(db, newest.id))
+    tampered["target_type"] = "unknown-format"
+    _execute(
+        db,
+        "UPDATE passorch_instances SET payload = ? WHERE instance_id = ?",
+        (json.dumps(tampered), newest.id),
+    )
+
+    with pytest.raises(InstancePersistenceError):
+        PersistentTargetInstanceStore(db, capacity=2)
+
+    # every original row is still present - the would-be-pruned rows
+    # were never deleted, and the tampered payload is untouched
+    assert _instance_row_count(db) == 4
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT instance_id FROM passorch_instances")
+        }
+    finally:
+        connection.close()
+    assert ids == {record.id for record in originals}
+    assert json.loads(_fetch_instance_payload(db, newest.id))["target_type"] == (
+        "unknown-format"
+    )
+
+    # and once the bad row is repaired, the pruned reopen succeeds
+    repaired = json.loads(_fetch_instance_payload(db, newest.id))
+    repaired["target_type"] = "pdf-document"
+    _execute(
+        db,
+        "UPDATE passorch_instances SET payload = ? WHERE instance_id = ?",
+        (json.dumps(repaired), newest.id),
+    )
+    reopened = PersistentTargetInstanceStore(db, capacity=2)
+    assert [item.id for item in reopened.list()] == [originals[2].id, newest.id]
+    assert _instance_row_count(db) == 2
+
+
 def test_delete_of_unknown_ids_returns_false_and_leaves_rows(tmp_path: Path) -> None:
     db = tmp_path / "instances.db"
     store = PersistentTargetInstanceStore(db)

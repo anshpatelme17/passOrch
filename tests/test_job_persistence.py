@@ -389,6 +389,65 @@ def test_capacity_hydration_keeps_newest_and_prunes_database(tmp_path: Path) -> 
     assert _row_count(db) == 1
 
 
+def test_validation_failure_during_hydration_never_prunes_rows(
+    tmp_path: Path,
+) -> None:
+    """A construction that fails validation must not have deleted rows.
+
+    The newest retained row is tampered with so it still *parses* (a
+    valid ``JobStatus`` enum value) but fails the base class's
+    terminal-status validation.  Opening with a smaller capacity must
+    raise without pruning the older rows - the destructive prune runs
+    only after every hydrated record has validated.
+    """
+
+    db = tmp_path / "jobs.db"
+    seeding = PersistentJobStore(db, capacity=5)
+    originals = [_failed_job(created_at=index) for index in range(1, 5)]
+    for job in originals:
+        seeding.put(job)
+
+    # tamper the NEWEST row at the SQL layer: "pending" parses as a
+    # JobStatus but is not terminal, so super().put() rejects it
+    newest = originals[-1]
+    tampered = json.loads(_fetch_payload(db, newest.job_id))
+    tampered["status"] = "pending"
+    _execute(
+        db,
+        "UPDATE passorch_jobs SET payload = ? WHERE job_id = ?",
+        (json.dumps(tampered), newest.job_id),
+    )
+
+    with pytest.raises(JobPersistenceError):
+        PersistentJobStore(db, capacity=2)
+
+    # every original row is still present - the would-be-pruned rows
+    # were never deleted, and the tampered payload is untouched
+    assert _row_count(db) == 4
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT job_id FROM passorch_jobs")
+        }
+    finally:
+        connection.close()
+    assert ids == {job.job_id for job in originals}
+    assert json.loads(_fetch_payload(db, newest.job_id))["status"] == "pending"
+
+    # and once the bad row is repaired, the pruned reopen succeeds
+    repaired = json.loads(_fetch_payload(db, newest.job_id))
+    repaired["status"] = "failed"
+    _execute(
+        db,
+        "UPDATE passorch_jobs SET payload = ? WHERE job_id = ?",
+        (json.dumps(repaired), newest.job_id),
+    )
+    reopened = PersistentJobStore(db, capacity=2)
+    assert [item.job_id for item in reopened.list()] == [newest.job_id, originals[2].job_id]
+    assert _row_count(db) == 2
+
+
 def test_deletion_survives_restart(tmp_path: Path) -> None:
     db = tmp_path / "jobs.db"
     first = _client(db)
