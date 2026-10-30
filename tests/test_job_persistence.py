@@ -448,6 +448,54 @@ def test_validation_failure_during_hydration_never_prunes_rows(
     assert _row_count(db) == 2
 
 
+def test_prune_failure_during_startup_never_loses_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing capacity prune must not have deleted any rows.
+
+    Every persisted record passes hydration validation, so the only
+    failure is the prune write itself: the fault is injected at the SQL
+    layer (a statement against a nonexistent table) so the real sqlite
+    driver fails inside the genuine write path.  Construction raises
+    the existing generic persistence failure with every row intact,
+    and the store recovers - pruning normally - once the fault clears.
+    """
+
+    db = tmp_path / "jobs.db"
+    seeding = PersistentJobStore(db, capacity=5)
+    originals = [_failed_job(created_at=index) for index in range(1, 5)]
+    for job in originals:
+        seeding.put(job)
+
+    monkeypatch.setattr(
+        "app.engines.job_persistence._PRUNE_JOBS_SQL",
+        "DELETE FROM no_such_table WHERE seq < ?",
+    )
+    with pytest.raises(JobPersistenceError):
+        PersistentJobStore(db, capacity=2)
+
+    # every original row is still present - the failed prune deleted nothing
+    assert _row_count(db) == 4
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT job_id FROM passorch_jobs")
+        }
+    finally:
+        connection.close()
+    assert ids == {job.job_id for job in originals}
+
+    # after the fault clears, the reopen hydrates the newest two and prunes
+    monkeypatch.undo()
+    reopened = PersistentJobStore(db, capacity=2)
+    assert [item.job_id for item in reopened.list()] == [
+        originals[3].job_id,
+        originals[2].job_id,
+    ]
+    assert _row_count(db) == 2
+
+
 def test_deletion_survives_restart(tmp_path: Path) -> None:
     db = tmp_path / "jobs.db"
     first = _client(db)
@@ -842,6 +890,49 @@ def test_out_of_band_row_removal_reads_as_missing(tmp_path: Path) -> None:
     second = _client(db)
     assert second.get(f"/api/jobs/{_job_id(created)}").status_code == 404
     assert second.get("/api/jobs").json()["total"] == 0
+
+
+def test_delete_self_heals_after_out_of_band_row_removal(tmp_path: Path) -> None:
+    """Deleting a job whose row vanished out-of-band still converges.
+
+    The SQLite row is removed directly (raw SQL) while the in-memory
+    record stays; ``delete`` is memory-checked and the zero-rowcount
+    database delete is tolerated, so both views end without the job -
+    the divergence self-heals instead of raising.  An unrelated job is
+    unaffected, and a reopened store agrees with the converged view.
+    """
+
+    db = tmp_path / "jobs.db"
+    store = PersistentJobStore(db)
+    doomed = _failed_job(created_at=1)
+    bystander = _failed_job(created_at=2)
+    store.put(doomed)
+    store.put(bystander)
+
+    # out-of-band deletion: the row disappears, memory never hears of it
+    _execute(db, "DELETE FROM passorch_jobs WHERE job_id = ?", (doomed.job_id,))
+
+    # the delete succeeds per the existing store contract (memory-checked)
+    assert store.delete(doomed.job_id) is True
+
+    # memory: the doomed job is gone, the bystander is untouched
+    assert store.get(doomed.job_id) is None
+    assert store.get(bystander.job_id) == bystander
+    # sqlite: the removed row stays absent, the bystander row stays put
+    connection = sqlite3.connect(db)
+    try:
+        rows = {
+            str(row[0])
+            for row in connection.execute("SELECT job_id FROM passorch_jobs")
+        }
+    finally:
+        connection.close()
+    assert doomed.job_id not in rows
+    assert rows == {bystander.job_id}
+
+    # a reopened store agrees with the converged view
+    reopened = PersistentJobStore(db)
+    assert [item.job_id for item in reopened.list()] == [bystander.job_id]
 
 
 def test_read_endpoints_never_touch_the_database(tmp_path: Path) -> None:

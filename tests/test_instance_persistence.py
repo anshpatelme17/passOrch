@@ -356,6 +356,51 @@ def test_reset_failure_leaves_memory_and_rows_intact(
     assert _instance_row_count(db) == 1
 
 
+def test_delete_self_heals_after_out_of_band_row_removal(tmp_path: Path) -> None:
+    """Deleting an instance whose row vanished out-of-band still converges.
+
+    The SQLite row is removed directly (raw SQL) while the in-memory
+    record stays; ``delete`` is memory-checked and the zero-rowcount
+    database delete is tolerated, so both views end without the record -
+    the divergence self-heals instead of raising.  An unrelated instance
+    is unaffected, and a reopened store agrees with the converged view.
+    """
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db)
+    doomed = create_target_instance("doomed", "pdf-document", "", store=store)
+    bystander = create_target_instance("bystander", "zip-archive", "", store=store)
+
+    # out-of-band deletion: the row disappears, memory never hears of it
+    _execute(
+        db,
+        "DELETE FROM passorch_instances WHERE instance_id = ?",
+        (doomed.id,),
+    )
+
+    # the delete succeeds per the existing store contract (memory-checked)
+    assert store.delete(doomed.id) is True
+
+    # memory: the doomed record is gone, the bystander is untouched
+    assert store.get(doomed.id) is None
+    assert store.get(bystander.id) == bystander
+    # sqlite: the removed row stays absent, the bystander row stays put
+    connection = sqlite3.connect(db)
+    try:
+        rows = {
+            str(row[0])
+            for row in connection.execute("SELECT instance_id FROM passorch_instances")
+        }
+    finally:
+        connection.close()
+    assert doomed.id not in rows
+    assert rows == {bystander.id}
+
+    # a reopened store agrees with the converged view
+    reopened = PersistentTargetInstanceStore(db)
+    assert [item.id for item in reopened.list()] == [bystander.id]
+
+
 def test_jobs_survive_instance_deletion_and_keep_their_snapshot(tmp_path: Path) -> None:
     db = tmp_path / "instances.db"
     client = _client(db)
@@ -573,6 +618,52 @@ def test_validation_failure_during_hydration_never_prunes_rows(
     )
     reopened = PersistentTargetInstanceStore(db, capacity=2)
     assert [item.id for item in reopened.list()] == [originals[2].id, newest.id]
+    assert _instance_row_count(db) == 2
+
+
+def test_prune_failure_during_startup_never_loses_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing capacity prune must not have deleted any rows.
+
+    Every persisted record passes hydration validation, so the only
+    failure is the prune write itself: the fault is injected at the SQL
+    layer (a statement against a nonexistent table) so the real sqlite
+    driver fails inside the genuine write path.  Construction raises
+    the existing generic persistence failure with every row intact,
+    and the store recovers - pruning normally - once the fault clears.
+    """
+
+    db = tmp_path / "instances.db"
+    seeding = PersistentTargetInstanceStore(db, capacity=5)
+    originals = [
+        create_target_instance(f"record-{index}", "pdf-document", "", store=seeding)
+        for index in range(1, 5)
+    ]
+
+    monkeypatch.setattr(
+        "app.engines.instance_persistence._PRUNE_INSTANCES_SQL",
+        "DELETE FROM no_such_table WHERE seq < ?",
+    )
+    with pytest.raises(InstancePersistenceError):
+        PersistentTargetInstanceStore(db, capacity=2)
+
+    # every original row is still present - the failed prune deleted nothing
+    assert _instance_row_count(db) == 4
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT instance_id FROM passorch_instances")
+        }
+    finally:
+        connection.close()
+    assert ids == {record.id for record in originals}
+
+    # after the fault clears, the reopen hydrates the newest two and prunes
+    monkeypatch.undo()
+    reopened = PersistentTargetInstanceStore(db, capacity=2)
+    assert [item.id for item in reopened.list()] == [originals[2].id, originals[3].id]
     assert _instance_row_count(db) == 2
 
 
