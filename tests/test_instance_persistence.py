@@ -875,6 +875,76 @@ def test_successful_eviction_put_removes_the_oldest_row_in_both_views(
     assert reopened.get(first.id) is None
 
 
+def test_duplicate_within_the_eviction_transaction_restores_the_store(
+    tmp_path: Path,
+) -> None:
+    """A duplicate hit inside the combined eviction operation is atomic.
+
+    The duplicate row is seeded straight into SQLite (present in the
+    database, absent from memory), so a capacity-filling put takes the
+    combined insert-with-eviction path: the INSERT stage hits the UNIQUE
+    constraint and must roll back as
+    :class:`DuplicateTargetInstanceError` without evicting the victim
+    row or leaving a partial change in either view.
+    """
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db, capacity=2)
+    older = create_target_instance("older", "pdf-document", "", store=store)
+    newer = create_target_instance("newer", "zip-archive", "", store=store)
+
+    # out-of-band duplicate: a real row in SQLite that memory never saw
+    duplicate = TargetInstanceRecord(
+        id=str(uuid.uuid4()),
+        name="duplicate",
+        target_type="zip-archive",
+        description="",
+        created_at=1,
+    )
+    _execute(
+        db,
+        "INSERT INTO passorch_instances (instance_id, payload) VALUES (?, ?)",
+        (
+            duplicate.id,
+            json.dumps(
+                {
+                    "id": duplicate.id,
+                    "name": duplicate.name,
+                    "target_type": duplicate.target_type,
+                    "description": duplicate.description,
+                    "created_at": duplicate.created_at,
+                }
+            ),
+        ),
+    )
+
+    # the store is full, so this put takes the atomic eviction path
+    with pytest.raises(DuplicateTargetInstanceError):
+        store.put(duplicate)
+
+    # memory: exactly the original two records, FIFO order intact, and
+    # the attempted duplicate was compensated away
+    assert [item.id for item in store.list()] == [older.id, newer.id]
+    assert store.get(duplicate.id) is None
+    # sqlite: the two original rows AND the seeded duplicate row, with no
+    # partial eviction (the victim row survived the rollback) and no new
+    # insertion
+    assert _instance_row_count(db) == 3
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT instance_id FROM passorch_instances")
+        }
+    finally:
+        connection.close()
+    assert ids == {older.id, newer.id, duplicate.id}
+
+    # the store stays fully usable after the rejected put
+    assert store.get(older.id) is not None
+    assert store.get(newer.id) is not None
+
+
 def test_out_of_band_row_removal_reads_as_missing(tmp_path: Path) -> None:
     db = tmp_path / "instances.db"
     first = _client(db)
