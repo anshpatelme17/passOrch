@@ -472,6 +472,63 @@ def test_reset_clears_persisted_rows(tmp_path: Path) -> None:
     assert len(PersistentJobStore(db)) == 0
 
 
+def test_reset_failure_leaves_memory_and_rows_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed database clear must not empty the in-memory store.
+
+    The fault is injected at the SQL layer (a statement against a
+    nonexistent table) so the real sqlite driver fails inside the
+    clear operation, exercising its actual failure path instead of
+    mocking ``reset``, ``clear`` or the persistence transaction.
+    ``reset`` is database-first, so the failure must raise before the
+    in-memory view changes at all.
+    """
+
+    db = tmp_path / "jobs.db"
+    store = PersistentJobStore(db)
+    first = _failed_job(created_at=1)
+    second = _failed_job(created_at=2)
+    third = _failed_job(created_at=3)
+    for job in (first, second, third):
+        store.put(job)
+
+    monkeypatch.setattr(
+        "app.engines.job_persistence._CLEAR_JOBS_SQL",
+        "DELETE FROM no_such_table",
+    )
+    with pytest.raises(JobPersistenceError):
+        store.reset()
+
+    # memory: exactly the original jobs, original newest-first ordering
+    assert [item.job_id for item in store.list()] == [
+        third.job_id,
+        second.job_id,
+        first.job_id,
+    ]
+    assert len(store) == 3
+    # sqlite: every original row survived the failed clear
+    assert _row_count(db) == 3
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT job_id FROM passorch_jobs")
+        }
+    finally:
+        connection.close()
+    assert ids == {first.job_id, second.job_id, third.job_id}
+
+    # after the fault clears, the store remains fully usable
+    monkeypatch.undo()
+    store.reset()
+    assert len(store) == 0
+    assert _row_count(db) == 0
+    store.put(_failed_job(created_at=4))
+    assert len(store) == 1
+    assert _row_count(db) == 1
+
+
 def test_connections_are_released_between_operations(tmp_path: Path) -> None:
     db = tmp_path / "jobs.db"
     client = _client(db)

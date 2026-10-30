@@ -305,6 +305,57 @@ def test_reset_clears_persisted_rows(tmp_path: Path) -> None:
     assert len(PersistentTargetInstanceStore(db)) == 0
 
 
+def test_reset_failure_leaves_memory_and_rows_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed database clear must not empty the in-memory store.
+
+    The fault is injected at the SQL layer (a statement against a
+    nonexistent table) so the real sqlite driver fails inside the
+    clear operation, exercising its actual failure path instead of
+    mocking ``reset``, ``clear`` or the persistence transaction.
+    ``reset`` is database-first, so the failure must raise before the
+    in-memory view changes at all.
+    """
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db)
+    first = create_target_instance("one", "pdf-document", "", store=store)
+    second = create_target_instance("two", "zip-archive", "", store=store)
+    third = create_target_instance("three", "pdf-document", "", store=store)
+
+    monkeypatch.setattr(
+        "app.engines.instance_persistence._CLEAR_INSTANCES_SQL",
+        "DELETE FROM no_such_table",
+    )
+    with pytest.raises(InstancePersistenceError):
+        store.reset()
+
+    # memory: exactly the original records, original insertion ordering
+    assert [item.id for item in store.list()] == [first.id, second.id, third.id]
+    assert len(store) == 3
+    # sqlite: every original row survived the failed clear
+    assert _instance_row_count(db) == 3
+    connection = sqlite3.connect(db)
+    try:
+        ids = {
+            str(row[0])
+            for row in connection.execute("SELECT instance_id FROM passorch_instances")
+        }
+    finally:
+        connection.close()
+    assert ids == {first.id, second.id, third.id}
+
+    # after the fault clears, the store remains fully usable
+    monkeypatch.undo()
+    store.reset()
+    assert len(store) == 0
+    assert _instance_row_count(db) == 0
+    create_target_instance("after-reset", "zip-archive", "", store=store)
+    assert len(store) == 1
+    assert _instance_row_count(db) == 1
+
+
 def test_jobs_survive_instance_deletion_and_keep_their_snapshot(tmp_path: Path) -> None:
     db = tmp_path / "instances.db"
     client = _client(db)
@@ -1023,6 +1074,58 @@ def test_update_failure_returns_structured_503_and_keeps_stored_values(
     )
     assert retry.status_code == 200
     assert store.get(_instance_id(created)).name == "doomed"
+
+
+def test_rowcount_zero_update_fails_closed_and_keeps_memory_truthful(
+    tmp_path: Path,
+) -> None:
+    """Updating a row removed out-of-band answers the failure contract.
+
+    The instance's SQLite row is deleted directly (raw SQL) while the
+    in-memory record stays, so the mirrored UPDATE matches zero rows:
+    the store must raise the existing persistence failure rather than
+    silently apply an update the database never saw.  The in-memory
+    record keeps its previous values, the row stays absent, and an
+    unrelated instance is unaffected.  The fault is the out-of-band
+    deletion itself - the update path behaves exactly as designed.
+    """
+
+    db = tmp_path / "instances.db"
+    store = PersistentTargetInstanceStore(db)
+    doomed = create_target_instance("doomed", "pdf-document", "", store=store)
+    bystander = create_target_instance("bystander", "zip-archive", "", store=store)
+    assert store.get(doomed.id) is not None
+    assert _instance_row_count(db) == 2
+
+    # out-of-band deletion: the row disappears, memory never hears of it
+    _execute(
+        db,
+        "DELETE FROM passorch_instances WHERE instance_id = ?",
+        (doomed.id,),
+    )
+
+    # the real UPDATE matches zero rows - fail closed, never silently
+    with pytest.raises(InstancePersistenceError):
+        store.update(doomed.id, name="renamed")
+
+    # memory: the doomed record keeps its original values (the failed
+    # update was never applied), and the bystander is untouched
+    stored = store.get(doomed.id)
+    assert stored is not None
+    assert stored.name == "doomed"
+    assert stored.description == ""
+    assert store.get(bystander.id) == bystander
+    # sqlite: the removed row stays absent, the bystander row stays put
+    connection = sqlite3.connect(db)
+    try:
+        rows = {
+            str(row[0])
+            for row in connection.execute("SELECT instance_id FROM passorch_instances")
+        }
+    finally:
+        connection.close()
+    assert doomed.id not in rows
+    assert rows == {bystander.id}
 
 
 def test_update_is_mirrored_and_survives_reopen(tmp_path: Path) -> None:
