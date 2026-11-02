@@ -77,10 +77,13 @@ curl "http://127.0.0.1:8000/api/jobs?limit=10&sort=created_desc"
 curl "http://127.0.0.1:8000/api/jobs?status=denied"
 curl "http://127.0.0.1:8000/api/jobs/stats"
 curl "http://127.0.0.1:8000/api/target-instances?target_type=pdf-document"
+curl -OJ "http://127.0.0.1:8000/api/jobs/…job-id…/export"
 ```
 
 List responses carry `count`/`total`/`limit`/`offset`; filters are applied
-before pagination. Stats aggregate by status and target.
+before pagination. Stats aggregate by status and target. The export answers
+a versioned JSON attachment named `passorch-job-…job-id….json` — the
+recorded job, read-only, with creation-time capability evidence.
 
 ## 6. Instance delete keeps the audit trail
 

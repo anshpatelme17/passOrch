@@ -15,7 +15,7 @@
  *   Node tree: parentNode, childNodes, firstChild, children, appendChild,
  *   removeChild, remove, textContent (recursive, real semantics)
  *   Element: tagName, className, id, setAttribute/getAttribute/removeAttribute,
- *   addEventListener/dispatchEvent, value, selected, dataset
+ *   addEventListener/dispatchEvent/click, value, selected, dataset
  *   window.location, window.addEventListener/removeEventListener
  *   Node as a common base of Element and Text (so `instanceof Node` works)
  *
@@ -202,6 +202,15 @@ export class ShimElement extends ShimNode {
       handler(event);
     }
     return true;
+  }
+
+  /**
+   * Programmatic activation, as `el.click()` does in the browser (used by
+   * dom.js's `downloadBlob` on its temporary anchor). Dispatches a click
+   * event at this element; no navigation or download is simulated.
+   */
+  click() {
+    this.dispatchEvent({ type: "click", target: this });
   }
 
   get value() {

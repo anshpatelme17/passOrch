@@ -14,6 +14,10 @@
  *   GET    /api/jobs              (JobSummary list; status/target/instance_id
  *                                  filters, sort, limit/offset pagination)
  *   GET    /api/jobs/{job_id}     (JobInfo detail)
+ *   GET    /api/jobs/{job_id}/export
+ *                                  (JobExportEnvelope: downloaded as a JSON
+ *                                  file when the operator presses "Export
+ *                                  JSON"; fetched on that click only)
  *
  * Verified schemas:
  *   JobCreateRequest {target: str (required), instance_id: str|null = null,
@@ -21,13 +25,18 @@
  *   JobSummary       {job_id, status, created_at, target}
  *   JobInfo          JobSummary + {failure_reason, preview, instance_id,
  *                                  instance_target_type}
+ *   JobExportEnvelope {schema_version: "1", exported_at: int,
+ *                      simulation_only: true, job: JobInfo}
  *
  * SECURITY BOUNDARY
  * All network calls go through the shared client in js/api.js; this module
  * never calls fetch itself. All output is rendered through the textContent
  * helpers so no API string can become markup. Only the simulation mode is
  * offered. Nothing here triggers discovery, capability refresh or execution,
- * and nothing invents progress, worker activity or engine output.
+ * and nothing invents progress, worker activity or engine output. The export
+ * is button-triggered, is written into a downloaded blob (the response body
+ * is never rendered into the page), and its filename derives from the
+ * server-minted job id only - never from the operator reference.
  */
 
 import { api } from "../api.js";
@@ -42,7 +51,7 @@ import {
   SimulatedOnlyBadge,
   SimulationNotice,
 } from "../components.js";
-import { button, empty, h, kv, pending, render, table, text } from "../dom.js";
+import { button, downloadBlob, empty, h, kv, pending, render, table, text } from "../dom.js";
 
 /* ---- module state --------------------------------------------------------- */
 
@@ -58,6 +67,8 @@ let formSlot = null;
 let formResultSlot = null;
 let detailSlot = null;
 let filterSlot = null;
+/** Status slot under the detail panel's "Export JSON" button. */
+let exportStatusSlot = null;
 let detailSelectedJobId = "";
 /**
  * Pagination + filtering for the list. `instanceFilter` is `""` (all),
@@ -599,6 +610,9 @@ async function renderDetail(jobId) {
     ]);
     return;
   }
+  // A fresh status slot per render: the export controls never carry a stale
+  // "downloaded"/error message over to a different job's detail.
+  exportStatusSlot = h("div", { class: "section-body" });
   render(detailSlot, [
     h("div", { class: "section-body" }),
     SimulatedOnlyBadge(),
@@ -610,7 +624,75 @@ async function renderDetail(jobId) {
           ? "This job recorded a simulation result. No engine was executed."
           : "This job was denied by the execution policy. No engine was executed.",
     }),
+    h("div", {
+      class: "actions",
+      children: [
+        button("Export JSON", () => processExport(jobId)),
+        exportStatusSlot,
+      ],
+    }),
   ]);
+}
+
+/* ---- export --------------------------------------------------------------- */
+
+/**
+ * In-flight guard: one export request at a time, mirroring `deletingJobId`.
+ * A second click while one is open is ignored.
+ * @type {string}
+ */
+let exportingJobId = "";
+
+/**
+ * Download one job's versioned JSON export envelope (M2.1 contract).
+ *
+ * Button-triggered only - nothing here polls or prefetches. The response body
+ * becomes the downloaded file via `downloadBlob`; it is never rendered into
+ * the page. The filename derives from the server-minted job id alone, exactly
+ * like the server's `Content-Disposition`, so the operator reference can
+ * never influence it.
+ */
+async function processExport(jobId) {
+  const slot = exportStatusSlot;
+  if (!slot) {
+    return;
+  }
+  if (exportingJobId) {
+    return;
+  }
+  exportingJobId = jobId;
+  render(slot, [pending("Preparing the JSON export...")]);
+  try {
+    const res = await api.get(`/api/jobs/${jobId}/export`);
+    // Fail closed: only a parseable body becomes a file. A 200 whose body is
+    // not JSON (a proxy page, say) is an error, never a download.
+    if (!res.ok || res.parseError || typeof res.raw !== "string") {
+      render(slot, [
+        InlineError(
+          res.error || {
+            kind: "http",
+            message: "The export response was not readable JSON.",
+            code: "",
+            detail: null,
+          }
+        ),
+        h("p", { class: "panel__hint", text: "The export was not generated." }),
+      ]);
+      return;
+    }
+    downloadBlob(
+      new Blob([res.raw], { type: "application/json" }),
+      `passorch-job-${jobId}.json`
+    );
+    render(slot, [
+      h("p", {
+        class: "panel__hint",
+        text: "Export downloaded as a JSON file. The page itself was not changed.",
+      }),
+    ]);
+  } finally {
+    exportingJobId = "";
+  }
 }
 
 /* ---- delete --------------------------------------------------------------- */

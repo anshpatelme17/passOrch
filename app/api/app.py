@@ -4,8 +4,11 @@ Simulation-only surface: the app exposes a read-only target list, a read-only
 engine capability list, a structured plan-preview endpoint, job endpoints
 (`POST/GET /api/jobs` and `GET /api/jobs/{job_id}`), target-instance CRUD, and
 the Phase 4A frontend shell. Nothing in this module (or anywhere it wires up)
-accepts a command, argv, executable path or real execution mode, and no endpoint
-can trigger engine probing.
+accepts a command, argv, executable path or real execution mode. Engine
+probing is reachable only through ``POST /api/engines/refresh`` (M1.1), which
+delegates to the injected, allowlist-bound
+``CapabilityRefreshService`` for metadata discovery only - no endpoint can
+trigger a password audit or any cracking operation.
 
 Phase 4A adds the frontend: ``GET /`` serves ``frontend/index.html`` and
 ``/static/`` serves the frontend assets. Both are optional - the factory falls
@@ -52,6 +55,7 @@ to the peer.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -59,6 +63,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.audit import AuditLogger
 from app.api.auth import configured_api_token, is_authorized, unauthorized_detail
 from app.api.rate_limit import (
     MUTATING_METHODS,
@@ -76,12 +81,14 @@ from app.api.store_resolution import (
     job_store_from_state,
     target_instance_store_from_state,
 )
+from app.api.routes.engine_refresh import router as engine_refresh_router
 from app.api.routes.engines import router as engines_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.target_instances import router as target_instances_router
 from app.api.routes.targets import router as targets_router
 from app.engines.adapter_registry import EngineAdapterRegistry, default_adapter_registry
 from app.engines.discovery.registry import DiscoveryRegistry, default_discovery_registry
+from app.engines.discovery.service import CapabilityRefreshService
 from app.engines.execution_policy import ExecutionPolicy
 from app.engines.instance_persistence import configured_instance_store
 from app.engines.job_persistence import configured_job_store
@@ -246,6 +253,7 @@ def _install_request_guards(
 def create_app(
     *,
     discovery_registry: DiscoveryRegistry | None = None,
+    discovery_refresh_service: CapabilityRefreshService | None = None,
     adapter_registry: EngineAdapterRegistry | None = None,
     execution_policy: ExecutionPolicy | None = None,
     job_store: JobStore | None = None,
@@ -256,8 +264,17 @@ def create_app(
     max_body_bytes: int | None = None,
     trusted_proxies: str | Iterable[str] | None = None,
     api_token: str | None = None,
+    audit: AuditLogger | None = None,
 ) -> FastAPI:
     """Build the PassOrch API with injectable read-only registries and store.
+
+    M3.1 adds the audit-event core: ``audit`` injects the structured audit
+    service, exposed as ``application.state.audit`` (default: the stdout
+    JSON-line ``AuditLogger``).  M3.2 wires the job-create route to it -
+    ``job_created`` after a successful persist and ``job_create_rejected``
+    on the approved rejection paths - and M3.3 wires the discovery-refresh
+    route (``refresh_requested`` / ``refresh_rejected`` /
+    ``refresh_completed``), while the read routes stay silent.
 
     Job and target-instance persistence (Phases 8A/8B): when no store is
     injected, an explicit ``job_db_path`` - or the ``PASSORCH_JOB_DB``
@@ -294,6 +311,15 @@ def create_app(
     authentication is off; an explicitly blank token fails fast with
     ``ValueError``.  Authentication never substitutes for the execution
     policy.
+
+    Discovery refresh (M1.1): an optional ``discovery_refresh_service``
+    (tests inject doubles) otherwise a ``CapabilityRefreshService`` is
+    constructed over the *same* resolved ``DiscoveryRegistry`` the
+    ``GET /api/engines`` routes read, so a refresh is immediately visible
+    to them.  ``application.state.discovery_refresh_lock`` (a
+    ``threading.Lock``) serialises refreshes **within this process only** -
+    concurrent requests are answered with ``409 refresh_in_progress``
+    instead of queueing, and multiple server processes do not coordinate.
     """
 
     if job_store is not None and job_db_path is not None:
@@ -311,9 +337,20 @@ def create_app(
             "simulation-only plan preview. No engine is ever executed."
         ),
     )
-    application.state.discovery_registry = (
+    effective_registry = (
         discovery_registry if discovery_registry is not None else default_discovery_registry()
     )
+    application.state.discovery_registry = effective_registry
+    # M1.1: the default refresh service is bound to the *same* registry the
+    # GET routes read, so a refresh is immediately visible to them.  The lock
+    # serialises refreshes within this process; it is not shared across
+    # server processes (documented limitation, not a distributed lock).
+    application.state.discovery_refresh_service = (
+        discovery_refresh_service
+        if discovery_refresh_service is not None
+        else CapabilityRefreshService(registry=effective_registry)
+    )
+    application.state.discovery_refresh_lock = threading.Lock()
     effective_adapters = (
         adapter_registry if adapter_registry is not None else default_adapter_registry()
     )
@@ -327,9 +364,15 @@ def create_app(
     application.state.target_instance_store = _build_target_instance_store(
         target_instance_store, job_db_path
     )
+    # M3.1/M3.2/M3.3: the audit-event service (closed schema, stdout JSON
+    # lines, emit-never-raises).  Injectable for capturing/failing sinks in
+    # tests; the job-create and discovery-refresh routes emit through it,
+    # best-effort only.
+    application.state.audit = audit if audit is not None else AuditLogger()
     _install_request_guards(application, limits, expected_token, trust_anchor)
     application.include_router(targets_router)
     application.include_router(engines_router)
+    application.include_router(engine_refresh_router)
     application.include_router(jobs_router)
     application.include_router(target_instances_router)
 

@@ -17,7 +17,7 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 - **Simulation-only**: No real password cracking, no cracking-engine execution, no attacker-supplied commands. Engine discovery may run allowlisted metadata commands only (`shell=False`, fixed binary names, hard timeout, captured output) — never a cracking attack
 - **Fail-closed authorization**: `ExecutionPolicy.authorize` gates everything; unknown/unmapped targets denied
 - **Strict schemas**: Request models use `extra="forbid"`; responses expose only structured, whitelisted fields
-- **No discovery via GET**: Read-only endpoints never trigger engine probing or capability refresh
+- **No discovery via GET**: Read-only endpoints never trigger engine probing or capability refresh — the only refresh trigger is the explicit, guarded `POST /api/engines/refresh` (metadata discovery only, documented below)
 - **Bounded storage**: In-memory stores with FIFO eviction, thread-safe with RLock; optional SQLite persistence mirrors writes fail-closed
 - **Opt-in authentication**: Bearer token for state-changing requests (`secrets.compare_digest`, generic 401); reads stay open by default, and authentication never substitutes for the execution policy
 
@@ -29,18 +29,74 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 | GET | `/health/ready` | Readiness check — both stores listable → `{status, mode}`; a store failure answers a generic `503 not_ready` |
 | GET | `/api/targets` | List read-only target format policy |
 | POST | `/api/targets/{target_id}/compatibility/plan` | Simulation-only plan preview |
-| GET | `/api/engines` | List all engine capability states |
+| GET | `/api/engines` | List all engine capability states (read-only; never probes) |
 | GET | `/api/engines/{engine}` | One engine's capability state |
+| POST | `/api/engines/refresh` | Metadata-only discovery refresh; optional body `{"engines": [...]}` selects a subset, no body refreshes all known engines (see **Engine discovery refresh** below) |
 | POST | `/api/jobs` | Create terminal audit job (simulated/denied/failed); 503 if a configured persistent store write fails |
 | GET | `/api/jobs` | List jobs. Query params: `status`, `target`, `instance_id` (empty matches unassociated jobs), `sort` (`created_desc` default, `created_asc`), `limit` (default 50, max 100), `offset` (default 0). Filters apply before pagination; unknown filter values return an empty page |
 | GET | `/api/jobs/stats` | Aggregated job statistics |
 | GET | `/api/jobs/{job_id}` | Fetch one job (404 for unknown) |
+| GET | `/api/jobs/{job_id}/export` | Download one job as a versioned JSON audit-trail attachment (`passorch-job-{job_id}.json`; read-only, 404 for unknown) |
 | DELETE | `/api/jobs/{job_id}` | Delete a job (204/404; 503 if a configured persistent store write fails) |
 | POST | `/api/target-instances` | Create target instance |
 | GET | `/api/target-instances` | List target instances (oldest-first). Query params: `target_type` (exact), `name` (case-insensitive substring), `limit` (default 50, max 100), `offset` (default 0). Filters apply before pagination; unknown filter values return an empty page |
 | GET | `/api/target-instances/{id}` | Get one instance |
 | PATCH | `/api/target-instances/{id}` | Update the mutable fields (`name`, `description` only — `id`, `target_type`, `created_at` are immutable; attempts to send them are 422, an empty patch is 422, unknown id is 404, 503 if a configured persistent store write fails) |
 | DELETE | `/api/target-instances/{id}` | Delete instance |
+
+### Job audit-trail export
+
+`GET /api/jobs/{job_id}/export` downloads **one recorded job** as a JSON file. It is a read like any other `GET`: unauthenticated by default (see **Authentication**), rate-limited, and strictly side-effect free.
+
+- **Envelope** (served as `application/json; charset=utf-8`):
+
+  ```json
+  {"schema_version": "1", "exported_at": 1793150000, "simulation_only": true, "job": {}}
+  ```
+
+  - **`schema_version`** is the pinned literal `"1"` so consumers can branch on it; the envelope model is `extra="forbid"` and every field is required, so serialization is fail-closed rather than permissive.
+  - **`exported_at`** is a UTC Unix timestamp of *when this file was produced*. It is **not** `created_at`: the job's own `created_at` inside `job` remains the original record timestamp, unchanged by exporting.
+  - **`simulation_only`** is the literal `true` — the artifact itself states that no engine was ever executed.
+  - **`job`** is exactly the `JobInfo` object `GET /api/jobs/{job_id}` returns (asserted field-for-field in tests), including the operator `reference` in `preview.request.reference` when the job has one — and a `null` preview for failed jobs, preserved as the record has it.
+- **Attachment filename**: `Content-Disposition: attachment; filename="passorch-job-{job_id}.json"` derives **exclusively from the server-minted job UUID**. Free text in the reference stays JSON body data — it never reaches a header or the filename, so it cannot inject or influence one.
+- **Historical accuracy**: the export renders the original persisted record only, using the creation-time capability evidence embedded in the job's own `PlanPreview`. The *current* discovery registry is never consulted and never merged in, so a later refresh cannot rewrite an exported history. No completion events, lifecycle transitions, actor identity or engine versions are invented where the record holds none.
+- **404**: an unknown or malformed id answers the standard `{"detail": {"error": "job_not_found", "detail": "job does not exist"}}` envelope with no attachment header.
+- **Read-only**: a single in-memory store read — no store mutation, no database write, no discovery or refresh, no adapter or engine execution, and no change to the job's status or record.
+- **SPA**: the Jobs detail panel's **Export JSON** button triggers this fetch — never automatically, never on page load — and downloads the response as `passorch-job-{job_id}.json`; the response body becomes the file and is never rendered into the page.
+
+### Engine discovery refresh
+
+`POST /api/engines/refresh` runs **metadata-only discovery**: it checks installed engine metadata and supported capabilities. It does not perform password auditing or cracking, never executes a cracking engine, and never returns raw probe output — the response is a closed five-field per-engine report.
+
+- **Optional request body**: no body, `{}` or `{"engines": null}` refreshes **all** known engines; `{"engines": ["john"]}` refreshes only that subset (de-duplicated by the service, deterministic order). The schema is `extra="forbid"` and carries nothing but known engine *names* — no executable path, binary name, command, subprocess argument, probe operation, parser, timeout or output limit can be supplied by a client.
+- **Closed engine set**: a name outside the known set fails closed with `404 unknown_engine` **before any probe runs**, so a mixed valid/invalid list refreshes nothing.
+- **Example** (authentication and rate limiting apply exactly as for any other mutation — see **Authentication** and **Rate Limiting**):
+
+  ```bash
+  curl -X POST http://127.0.0.1:8000/api/engines/refresh \
+    -H "Content-Type: application/json" -d '{"engines": ["john"]}'
+  ```
+
+  A `200` response (one report per refreshed engine, in the request's order):
+
+  ```json
+  {"engines": [{"engine": "john", "discovered": true, "capability_status": "verified", "reason": "", "truncated": false}]}
+  ```
+
+- **`capability_status`** is exactly one of `verified`, `unknown`, `error`. **`verified` means verified *metadata* evidence only** — capability metadata parsed from a bounded, allowlisted probe — never that real execution is enabled; this platform remains simulation-only. `unknown` means no verified evidence is held, `error` means the last probe attempt failed.
+- **Hashcat limitation**: no capability operation for hashcat is on the discovery allowlist, so hashcat is never probed for capabilities and currently stays `capability_status: "unknown"` even when its binary is found (`discovered: true`).
+- **`truncated: true`** means probe output hit the size bound and the captured metadata was incomplete. Truncated evidence can never become `verified` (the parsers answer `unknown`, e.g. `truncated_output` / `truncated_probe`), and the frontend flags it as incomplete — it must not be read as verified capability evidence.
+- **Outcomes**:
+  - `200` — per-engine refresh reports as above.
+  - `401` — when authentication is enabled and the bearer token is missing/wrong: the standard generic `unauthorized` envelope from **Authentication**.
+  - `404` — unknown engine name(s): `{"detail": {"error": "unknown_engine", "detail": "engine is not a known engine"}}`.
+  - `409` — another refresh is already running in this process: `{"detail": {"error": "refresh_in_progress", "detail": "another discovery refresh is already running"}}`.
+  - `413` / `400` — the standard body-cap and chunked-framing guard responses from **Rate Limiting** (`payload_too_large` / `unsupported_transfer_encoding`).
+  - `422` — malformed body shape or an extra field (`extra="forbid"`), in FastAPI's documented Pydantic array form (see **Error Contract**).
+  - `429` — rate limited: the standard `rate_limited` envelope with `Retry-After` from **Rate Limiting**.
+  - `503` — unexpected internal refresh failure: `{"detail": {"error": "discovery_refresh_failed", "detail": "engine discovery refresh could not be completed"}}` — a fixed message with no exception text, path or engine output.
+- **Concurrency**: refreshes are serialised by a **process-local, non-blocking lock** — a second concurrent request receives the structured `409 refresh_in_progress` instead of queueing waiters, and the lock is released in a `finally` on both success and failure. The lock coordinates **one process only**: multiple worker processes do not share it (or the discovery registry), which is a documented limitation, not a distributed lock.
+- **GET semantics unchanged**: `GET /api/engines` and `GET /api/engines/{engine}` remain side-effect free and never trigger discovery. In the SPA, refresh runs only when an operator clicks **Refresh engines** on the `/engines` view — never automatically on page load.
 
 ## Error Contract
 
@@ -50,7 +106,7 @@ Every non-2xx response the application builds — request-guard rejections and e
 {"detail": {"error": "job_not_found", "detail": "job does not exist"}}
 ```
 
-- **`error`** is a stable snake_case machine code a client can branch on (`unauthorized`, `rate_limited`, `payload_too_large`, `unsupported_transfer_encoding`, `persistence_unavailable`, `not_ready`, `invalid_request`, `job_not_found`, `target_instance_not_found`, `target_not_mapped`, `unknown_engine`, `engine_not_registered`, `unknown_target`, `target_instance_type_mismatch`). Some codes add structured fields (for example `supported_targets` and `target` on `unknown_target`, `retry_after` on `rate_limited`).
+- **`error`** is a stable snake_case machine code a client can branch on (`unauthorized`, `rate_limited`, `payload_too_large`, `unsupported_transfer_encoding`, `persistence_unavailable`, `not_ready`, `invalid_request`, `job_not_found`, `target_instance_not_found`, `target_not_mapped`, `unknown_engine`, `engine_not_registered`, `unknown_target`, `target_instance_type_mismatch`, `refresh_in_progress`, `discovery_refresh_failed`). Some codes add structured fields (for example `supported_targets` and `target` on `unknown_target`, `retry_after` on `rate_limited`).
 - **`detail`** is a short human sentence — never an exception text, SQL fragment, file path or traceback.
 - **The single exception**: FastAPI's automatic request-body validation keeps its documented Pydantic `422` array shape (`[{"loc": [...], "msg": "...", "type": "..."}]`) so OpenAPI tooling and Pydantic-aware clients keep working. Domain and query-parameter rejections raised inside handlers are not Pydantic validation and use the envelope (`invalid_request`).
 - The SPA's `describeError` renders the object shape as `"<message> (<code>)"`.
@@ -60,11 +116,11 @@ Every non-2xx response the application builds — request-guard rejections and e
 | Route | Description |
 |-------|-------------|
 | `/dashboard` | Health, engines, statistics, recent jobs, instances |
-| `/engines` | Read-only engine capability table |
+| `/engines` | Engine capability table with a user-triggered **Refresh engines** button (metadata discovery; loads with a plain GET, never refreshes automatically) |
 | `/targets` | Read-only target catalog with plan links |
 | `/instances` | CRUD for target instances |
 | `/plan` | Plan preview form + result |
-| `/jobs` | Job creation, list, detail, delete |
+| `/jobs` | Job creation, list, detail, export (JSON attachment download), delete |
 
 ## Setup
 
@@ -202,7 +258,7 @@ docker compose down -v     # ...or also delete the stored database
 ## Operations
 
 - **Health semantics**: `GET /health` returns exactly `{"status": "ok", "mode": "simulated"}`. It is a *liveness* probe — unauthenticated by design, side-effect free (it never touches the database, discovery, or engines), and it exposes no paths, tokens, or tracebacks. `GET /health/ready` is the *readiness* probe: it additionally lists each configured store once (a pure in-memory read — persistent stores hydrate at construction, so the probe never opens SQLite or writes anything) and answers `200` with the same body, or one generic `503 {"detail": {"error": "not_ready", "detail": "readiness probe failed"}}` when a store fails, with no exception text, SQL, path or traceback. Startup failures (unusable database, invalid schema, bad security configuration) still stop the process before it can answer either probe.
-- **Logging**: operational request logging comes from uvicorn's access and error logs (method, path, status, duration; full server-side traceback for unhandled 500s). The application modules themselves **never log** — this is a tested security contract, so bearer tokens, authorization headers, request bodies, and database paths cannot reach stdout or a log file. Client-facing errors stay generic; runtime persistence failures surface as structured `503 persistence_unavailable` responses, while startup persistence failures stop the process with a server-side traceback.
+- **Logging**: operational request logging comes from uvicorn's access and error logs (method, path, status, duration; full server-side traceback for unhandled 500s); uvicorn's default access-log handler writes to **stdout**, so access lines and audit lines share the same stream. The application modules themselves **never log** — this is a tested security contract, so bearer tokens, authorization headers, request bodies, and database paths cannot reach stdout or a log file. The single, narrow exception is the dedicated audit-event service (`app/api/audit.py`): the sole approved structured application output, it emits only its closed `schema_version: "1"` schema as one JSON line per event directly to stdout (no file handlers, no logger names, no root-logger configuration). Because uvicorn's access logs may also appear on stdout, consumers must identify audit records by that JSON schema — stdout is never claimed to hold only audit records. Since M3.2/M3.3 **both workflow routes** emit through the service: the job-create route emits exactly one `job_created` after a successful persist (simulated, denied or failed) or one `job_create_rejected` on the approved rejection paths (unknown target, instance not found, instance type mismatch, persistence unavailable); the discovery-refresh route emits `refresh_requested` before the refresh operation runs, `refresh_rejected` on the two understood rejections (refresh already in progress, unknown engine) with closed reason codes, and one `refresh_completed` per returned per-engine report carrying only `engine`, `discovered`, `capability_status`, `reason` and `truncated` — `discovered` being a bounded summary boolean copied verbatim from the report (not probe output, not subprocess detail, and not a claim of verification: verification is `capability_status`) — never raw probe output, executable paths, subprocess arguments or exception messages. The read routes (list, detail, export) and every auth, rate-limit or validation rejection are deliberately excluded. The service is best-effort and **fail-silent**: a sink failure is swallowed and can never change a job status, a discovery result or an API response — and it is **not** the authoritative record: the persisted job record and the discovery registry are. There is no persistent audit-event store and no export-history feature — audit lines exist only on stdout. Retention and rotation belong to the container runtime, as with all stdout output. Client-facing errors stay generic; runtime persistence failures surface as structured `503 persistence_unavailable` responses, while startup persistence failures stop the process with a server-side traceback.
 - **Shutdown**: `docker stop` sends SIGTERM, which uvicorn handles as a graceful shutdown; persisted records live on the volume, not in the container. Stopping or recreating the container never deletes the configured database (only `docker compose down -v` removes the volume).
 - **Backup and restore**: use `backup_database` (see **Persistence**) — the SQLite online-backup API copies a live database consistently; reverse the arguments to restore. Back up the configured file (in a container: `docker compose exec` or a volume snapshot) before upgrades.
 - **Operational limitations**: rate-limit counters are per process (reset on restart, not shared across workers); each store hydrates once at construction, so a second process sees stale reads until restart. Every database operation opens its own short-lived SQLite connection and closes it in `finally` (rolling back on failure), so no connection or write lock is held between operations (default rollback-journal mode — no WAL/SHM files).

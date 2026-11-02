@@ -3,8 +3,9 @@
 These tests drive the actual bundled SPA in headless Chromium against a
 real uvicorn server bound to127.0.0.1 on an ephemeral port, covering the
 cross-layer workflows the Node harness (frontend-tests/) and the API suites
-cannot cover alone: routing, DOM rendering, form interaction, and the
-client-side handling of structured API errors.
+cannot cover alone: routing, DOM rendering, form interaction, the
+client-side handling of structured API errors, and (M2.3) the export
+JSON file download flow.
 
 Safety contracts:
 
@@ -28,10 +29,12 @@ text, roles and element ids; no sleeps, no pixel/position assertions.
 from __future__ import annotations
 
 import contextlib
+import json
 import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -273,6 +276,82 @@ def test_jobs_list_pagination_filters_and_sort(page: Page) -> None:
         # Instance filter "No instance": all seeded jobs are unassociated.
         page.locator("#jobs-filter-instance").select_option("none")
         expect(page.get_by_text("51 recorded job(s), latest first.")).to_be_visible()
+
+
+def test_export_json_downloads_the_envelope_and_cleans_up(page: Page) -> None:
+    """M2.3 - a real browser downloads the M2.1 envelope through the M2.2 UI.
+
+    Proves the download mechanics end to end where the Node harness cannot:
+    a JSON file arrives with the UUID-derived filename, its bytes parse as
+    the versioned envelope, the temporary anchor is removed again, and every
+    object URL is revoked - with the revoke running synchronously right after
+    ``click()`` while the download still completes (the reliability question
+    this milestone had to answer, demonstrated rather than assumed).
+    """
+    console_errors: list[str] = []
+    page.on(
+        "console",
+        lambda message: console_errors.append(message.text) if message.type == "error" else None,
+    )
+    with _live_server(_fresh_app()) as base:
+        job_id = _seed_jobs(base, 1)[0]
+        page.goto(f"{base}/#/jobs")
+
+        # Record the object-URL lifecycle from inside the page, so the test
+        # can assert the temporary resources are cleaned up after the click.
+        page.evaluate(
+            """
+            () => {
+              window.__exportUrls = { created: [], revoked: [] };
+              const create = URL.createObjectURL.bind(URL);
+              const revoke = URL.revokeObjectURL.bind(URL);
+              URL.createObjectURL = (blob) => {
+                const url = create(blob);
+                window.__exportUrls.created.push(url);
+                return url;
+              };
+              URL.revokeObjectURL = (url) => {
+                window.__exportUrls.revoked.push(url);
+                revoke(url);
+              };
+            }
+            """
+        )
+
+        # The export control exists only inside an opened job detail.
+        page.get_by_role("button", name="Details").first.click()
+        expect(page.get_by_role("button", name="Export JSON")).to_be_visible()
+
+        with page.expect_download() as download_info:
+            page.get_by_role("button", name="Export JSON").click()
+        download = download_info.value
+
+        assert download.failure() is None, download.failure()
+        assert download.suggested_filename == f"passorch-job-{job_id}.json"
+
+        payload = json.loads(Path(str(download.path())).read_text(encoding="utf-8"))
+        assert set(payload) == {"schema_version", "exported_at", "simulation_only", "job"}
+        assert payload["schema_version"] == "1"
+        assert payload["simulation_only"] is True
+        assert isinstance(payload["exported_at"], int)
+        assert payload["job"]["job_id"] == job_id
+        # the operator reference survives into the file unchanged
+        assert payload["job"]["preview"]["request"]["reference"] == "seed-0"
+
+        # Success state in the UI; the envelope body itself never enters the page.
+        expect(page.get_by_text("Export downloaded as a JSON file.")).to_be_visible()
+        assert "schema_version" not in page.content()
+
+        # Temporary download resources are cleaned up: anchor gone, every
+        # object URL revoked (the revoke fires synchronously after click).
+        expect(page.locator("a[download]")).to_have_count(0)
+        urls = page.evaluate("() => window.__exportUrls")
+        assert len(urls["created"]) == 1
+        assert urls["revoked"] == urls["created"]
+
+        # The strict CSP must accept the blob-URL download (violations would
+        # surface as console errors naming the policy).
+        assert [text for text in console_errors if "Content Security Policy" in text] == []
 
 
 def test_plan_preview_denial_is_structured_and_honest(page: Page) -> None:

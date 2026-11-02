@@ -28,7 +28,7 @@ include = ["app*"]
 testpaths = ["tests"]
 addopts = "-q"
 markers = [
-    "allow_subprocess: permits the single authorised Node.js test runner",
+    "allow_subprocess: permits the authorised subprocess use (Node.js suites and the audit uvicorn probe)",
 ]
 filterwarnings = [
     "error::DeprecationWarning:app.*",

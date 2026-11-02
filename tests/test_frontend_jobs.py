@@ -14,6 +14,8 @@ execute the view. It verifies what can be verified without a browser:
 * the optional instance association and its compatibility labelling;
 * domain, validation, transport and malformed-response handling;
 * empty, loading, retry and mutation-result states;
+* the button-triggered export download (M2.2): allow-listed endpoint, filename
+  from the job id only, response body written to a blob - never rendered;
 * absence of unsafe DOM sinks and direct fetch calls.
 
 Live API agreement tests at the bottom execute against the real server, so the
@@ -50,8 +52,19 @@ def _code(path: Path) -> str:
 JOBS_CODE = _code(VIEW)
 JOBS_RAW = _read(VIEW)
 
+#: The M2.2 export handler: raw slice and the same slice without comments.
+_EXPORT_AT = JOBS_RAW.find("async function processExport")
+EXPORT_RAW = JOBS_RAW[_EXPORT_AT : JOBS_RAW.find("/* ---- delete", _EXPORT_AT)]
+EXPORT_CODE = re.sub(r"/\*.*?\*/", "", EXPORT_RAW, flags=re.DOTALL)
+
 #: Endpoints this view may use.
-ALLOWED = ("/api/targets", "/api/target-instances", "/api/jobs", "/api/jobs/{job_id}")
+ALLOWED = (
+    "/api/targets",
+    "/api/target-instances",
+    "/api/jobs",
+    "/api/jobs/{job_id}",
+    "/api/jobs/{job_id}/export",
+)
 
 #: Endpoints owned by nothing else (there are none left) - sanity check.
 FOREIGN = ("/api/engines", "/health", "compatibility/plan")
@@ -185,6 +198,71 @@ def test_details_panel_distinguishes_simulated_from_denied() -> None:
     code = JOBS_CODE
     assert 'job.status === "simulated"' in code
     assert "This job was denied by the execution policy." in code
+
+
+# --------------------------------------------------------------------------- #
+# export (M2.2): button-triggered JSON audit-trail download
+# --------------------------------------------------------------------------- #
+
+
+def test_export_calls_only_the_allow_listed_endpoint() -> None:
+    assert "/api/jobs/{job_id}/export" in ALLOWED
+    assert 'api.get(`/api/jobs/${jobId}/export`)' in JOBS_CODE
+    assert "/api/engines" not in EXPORT_CODE
+
+
+def test_export_button_lives_in_the_detail_panel() -> None:
+    detail = JOBS_CODE[JOBS_CODE.find("async function renderDetail") :]
+    assert 'button("Export JSON", () => processExport(jobId))' in detail
+    # and the handler renders its status into the slot next to that button
+    assert "exportStatusSlot" in detail
+
+
+def test_export_filename_derives_from_the_job_id_only() -> None:
+    """Never the operator reference - mirroring the server's disposition."""
+
+    assert "`passorch-job-${jobId}.json`" in EXPORT_CODE
+    assert "reference" not in EXPORT_CODE
+
+
+def test_export_is_button_triggered_and_never_prefetched() -> None:
+    """Exactly one request for the export path, inside the click handler."""
+
+    assert JOBS_CODE.count("/api/jobs/${jobId}/export") == 1
+    assert "api.get(`/api/jobs/${jobId}/export`)" in EXPORT_CODE
+
+
+def test_export_body_is_downloaded_and_never_rendered_into_the_page() -> None:
+    assert "downloadBlob(" in EXPORT_CODE
+    assert "new Blob([res.raw]" in EXPORT_CODE
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "textContent ="):
+        assert sink not in EXPORT_CODE, sink
+    # the shared helper is imported from dom.js (the only element factory a
+    # view may use) and used - never re-implemented here
+    assert "downloadBlob" in JOBS_RAW
+    assert "function downloadBlob" not in JOBS_RAW
+
+
+def test_export_reports_loading_error_and_success_states() -> None:
+    code = EXPORT_CODE
+    assert 'pending("Preparing the JSON export...")' in code
+    assert "InlineError(" in code
+    assert "The export was not generated." in code
+    assert "Export downloaded as a JSON file." in code
+
+
+def test_export_fails_closed_on_an_unparseable_success_body() -> None:
+    """A 200 whose body is not JSON is an error, never a download."""
+
+    assert "res.parseError" in EXPORT_CODE
+    assert 'typeof res.raw !== "string"' in EXPORT_CODE
+
+
+def test_export_is_guarded_against_concurrent_clicks() -> None:
+    code = JOBS_CODE
+    assert "let exportingJobId" in code
+    assert "if (exportingJobId) {" in code
+    assert "exportingJobId = \"\"" in code
 
 
 # --------------------------------------------------------------------------- #

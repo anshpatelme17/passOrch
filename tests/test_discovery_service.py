@@ -271,6 +271,44 @@ def test_oversized_probe_never_verifies() -> None:
     assert service.registry.require(JOHN).real_engine_compatible is False
 
 
+def test_non_positive_output_limit_never_verifies() -> None:
+    """A non-positive ``max_output_bytes`` empties the probe, never verifies.
+
+    ``clamp_output`` answers ``("", "", True)`` for any limit ``<= 0``, so a
+    zero (or negative) injected limit turns even a well-formed John format
+    listing into an empty, truncation-flagged probe: the verified parser
+    downgrades it to ``UNKNOWN``/``truncated_probe`` and no partial formats
+    or targets may survive.  Only the injected executor double runs - no
+    real engine or arbitrary subprocess is ever involved.
+    """
+
+    for limit in (0, -5):
+        executor = RecordingExecutor({JOHN_OPERATION: (0, JOHN_GOOD_OUTPUT, "", False)})
+        registry = DiscoveryRegistry()
+        service = CapabilityRefreshService(
+            registry,
+            which=RecordingWhich(),
+            executor=executor,
+            max_output_bytes=limit,
+        )
+        (report,) = service.refresh(JOHN)
+
+        # the injected double ran exactly once, with the fixed allowlisted argv
+        assert executor.calls == [(FAKE_BINARIES[JOHN], JOHN_OPERATION)]
+
+        # the probe emptied and flagged truncation -> UNKNOWN, never VERIFIED
+        assert report.capability_status is CapabilityStatus.UNKNOWN
+        assert report.truncated is True
+        entry = registry.require(JOHN)
+        assert entry.is_verified is False
+        assert entry.real_engine_compatible is False
+        # no partial evidence survives the emptied probe
+        assert entry.capabilities is not None
+        assert entry.capabilities.reason == "truncated_probe"
+        assert entry.formats == ()
+        assert entry.targets == ()
+
+
 def test_foreign_output_never_verifies() -> None:
     foreign = "Supported hash modes:\n  0 | MD5\n"
     executor = RecordingExecutor({JOHN_OPERATION: (0, foreign, "", False)})

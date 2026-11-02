@@ -75,8 +75,9 @@ async function enginesSection(slot) {
   }
   const engines = asArray(res.data && res.data.engines);
   if (engines.length === 0) {
-    // Honest empty state: no UI action can make the server probe an engine, and
-    // Phase 3A deliberately exposes no refresh endpoint. An empty list is the
+    // Honest empty state: this dashboard itself never probes an engine and
+    // offers no refresh control - the refresh button lives on the Engines
+    // view (M1.3) and runs only on an explicit click. An empty list is the
     // expected result, not an error - and not something to invent engines for.
     render(slot, [
       empty(

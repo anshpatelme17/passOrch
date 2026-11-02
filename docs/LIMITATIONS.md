@@ -12,15 +12,38 @@ risks are expanded in [THREAT_MODEL.md](../THREAT_MODEL.md#residual-risks-accept
 * **Engine discovery is metadata-only** and runs at most allowlisted
   `(binary, operation)` commands (`shell=False`, fixed names, timeout,
   captured output). With no engines installed, every audit is denied — by
-  design.
+  design. Discovery is triggered explicitly — the guarded
+  `POST /api/engines/refresh` endpoint or a code/test call — never by a
+  `GET`, a page load, or any automatic schedule; the endpoint performs
+  metadata discovery only, never password auditing or cracking.
+* **Hashcat cannot produce `VERIFIED` capability evidence today.** No
+  capability operation for hashcat is on the discovery allowlist, so it is
+  never probed for capabilities and reports `capability_status: "unknown"`
+  even when its binary is found. Only John can currently reach `verified`.
 * **Targets are a fixed policy map.** Arbitrary formats cannot be added at
   runtime; new formats are a code change.
+* **Job audit-trail exports are point-in-time records, not event logs.**
+  `GET /api/jobs/{job_id}/export` carries the single persisted `JobInfo`
+  record inside a versioned envelope (`schema_version: "1"`): there is
+  **no lifecycle event history, no actor identity, no fabricated completion
+  timestamp**, and **no engine-version snapshot where the record never held
+  one**. `exported_at` marks file production only — it is not a job
+  lifecycle event — and later capability refreshes never rewrite an
+  exported record (creation-time evidence is preserved by design). Exports
+  contain no raw output or secrets, and like everything else here they
+  describe simulations: **no real password auditing or cracking exists to
+  export**.
 
 ## Persistence and state
 
 * **Hydrate-once stores.** Persistent stores load once at construction; a
   second process over the same database file sees a stale snapshot until it
   restarts. There is no live cross-process visibility or replication.
+* **Discovery registry and refresh lock are process-local.** The capability
+  registry and the non-blocking refresh lock live in one process: separate
+  worker processes neither share refreshed capability state nor serialise
+  refreshes against each other (concurrency is rejected with `409` only
+  *within* a process). There is no distributed lock.
 * **Single database file.** Jobs and target instances share one SQLite file;
   there is no multi-node setup, external database, or HA story.
 * **Backups are your job.** `backup_database` (online-backup API) is
@@ -53,8 +76,22 @@ risks are expanded in [THREAT_MODEL.md](../THREAT_MODEL.md#residual-risks-accept
 
 ## Operations
 
-* **Uvicorn access logs are the only log surface** — the application never
-  logs (a tested invariant so secrets cannot reach stdout).
+* **Uvicorn access logs plus the audit-event stdout are the only log
+  surfaces** — the application otherwise never logs (a tested invariant so
+  secrets cannot reach stdout). Both surfaces share stdout (uvicorn's
+  access-log handler defaults to it), so consumers identify audit records
+  by the closed JSON schema, never by stream position or order. The audit
+  service emits only its closed schema, best-effort and fail-silent (a
+  sink failure never changes a response, discovery result or registry
+  state) — and it is not the authoritative record (the persisted job
+  record and the discovery registry are): since M3.2/M3.3 the job-create
+  route emits `job_created` / `job_create_rejected` and the
+  discovery-refresh route emits `refresh_requested` / `refresh_rejected` /
+  `refresh_completed`, while GET routes are excluded. No raw probe output,
+  executable paths, subprocess arguments or exception messages are ever
+  emitted, and there is no persistent audit-event store and no
+  export-history feature; retention and rotation are the runtime's
+  responsibility (stdout, no files).
 * **Default deployment is loopback-only.** Compose publishes
   `127.0.0.1:8000`; exposing it remotely is an operator decision with the
   consequences listed in README **Deployment**.

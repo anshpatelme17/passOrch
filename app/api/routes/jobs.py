@@ -8,6 +8,8 @@ Endpoints:
   ``instance_id`` filters, ``sort`` (``created_desc`` default, ``created_asc``)
   and ``limit`` / ``offset`` pagination; newest-first by default
 * ``GET  /api/jobs/{job_id}`` - fetch one recorded job (404 if not found)
+* ``GET  /api/jobs/{job_id}/export`` - download one recorded job as a
+  versioned JSON envelope (M2.1; read-only, 404 if not found)
 * ``DELETE /api/jobs/{job_id}`` - delete a recorded job (204/404; 503 on a
   failed persistence write)
 
@@ -18,19 +20,48 @@ same ``job_not_found`` contract. Reads are served from the in-memory store
 and never touch the database; a ``JobPersistenceError`` from a write is
 translated here into HTTP 503 with no SQL text, path or driver message.
 
+The export route (M2.1) reads exactly one persisted record and never mutates
+it. It answers ``application/json; charset=utf-8`` with a
+``Content-Disposition`` attachment whose filename derives exclusively from
+the server-minted job UUID - never from the operator ``reference`` or any
+other free text, which stays JSON body data only.
+
 Phase 3D: ``POST /api/jobs`` requires an explicit ``target`` selected by the
 caller and validated against the read-only ``TARGET_FORMAT_POLICY`` map. An
 unmapped target is a transport-level 422 with a structured detail; it is never
 guessed from ``reference`` and never defaulted.
+
+M3.2 audit emission (best-effort, through ``request.app.state.audit`` only -
+this module imports no ``logging``): the create route emits exactly one
+``job_created`` after ``create_job`` has persisted the record (covering the
+SIMULATED, DENIED and FAILED terminal outcomes) or exactly one
+``job_create_rejected`` on the approved rejection paths (unknown target,
+instance not found, instance type mismatch, persistence unavailable), each
+with a closed reason code.  Reads (list, detail, export, stats) and DELETE
+emit nothing, and the audit service's own failure boundary means an emission
+problem can never change a status code, a body or a stored record.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response
+import time
+import uuid
 
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
+
+from app.api.audit import EVENT_JOB_CREATE_REJECTED, EVENT_JOB_CREATED
 from app.api.errors import invalid_request, job_not_found
-from app.api.schemas import JobCreateRequest, JobInfo, JobPageResponse, JobStatsResponse, JobSummary
+from app.api.schemas import (
+    JobCreateRequest,
+    JobExportEnvelope,
+    JobInfo,
+    JobPageResponse,
+    JobStatsResponse,
+    JobSummary,
+)
 from app.api.store_resolution import (
+    PERSISTENCE_ERROR,
     persistence_unavailable_detail,
     resolve_job_store,
     resolve_target_instance_store,
@@ -43,7 +74,7 @@ from app.engines.execution_policy import ExecutionPolicy
 from app.engines.job_persistence import JobPersistenceError
 from app.engines.jobs import AuditJob
 
-__all__ = ["create", "detail", "list_jobs", "router", "unknown_target_detail"]
+__all__ = ["create", "detail", "export_job", "list_jobs", "router", "unknown_target_detail"]
 
 #: Stable machine-readable code for a target missing from the format policy.
 UNKNOWN_TARGET_ERROR = "unknown_target"
@@ -130,6 +161,56 @@ def _resolve_policy(request: Request) -> ExecutionPolicy:
     return ExecutionPolicy(_resolve_adapter_registry(request))
 
 
+def _canonical_uuid_or_none(value: object) -> str | None:
+    """``value`` as the canonical lowercase UUID it is, else ``None``.
+
+    Audit events may carry an ``instance_id`` only in exactly the canonical
+    shape the audit schema accepts; a malformed or unknown identifier is
+    omitted rather than echoed, and a hostile ``str`` subclass never passes
+    the exact-type gate (M3.1 finding F1).
+    """
+
+    if type(value) is not str:
+        return None
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return None
+    return value if str(parsed) == value else None
+
+
+def _emit_audit(
+    request: Request,
+    *,
+    event: str,
+    reason: str,
+    target: str | None = None,
+    instance_id: str | None = None,
+    job_id: str | None = None,
+    status: str | None = None,
+) -> None:
+    """Best-effort audit emission (M3.2): never raises into the handler.
+
+    ``AuditLogger.emit`` already swallows construction, clock, serialization
+    and sink failures; this narrow boundary additionally covers a missing or
+    unusable ``state.audit``, so an audit problem can never change an HTTP
+    status, a response body or a job record, and never leaks an exception
+    detail.  Fields are the closed audit schema - nothing else can be passed.
+    """
+
+    try:
+        request.app.state.audit.emit(
+            event=event,
+            reason=reason,
+            target=target,
+            instance_id=instance_id,
+            job_id=job_id,
+            status=status,
+        )
+    except Exception:
+        return
+
+
 @router.post("", response_model=JobInfo)
 def create(request: Request, body: JobCreateRequest) -> JobInfo:
     """Create and persist a terminal audit job (simulated/denied/failed).
@@ -147,9 +228,18 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
     When a persistent job database is configured and the mirrored write
     fails, the job was not stored: the response is a structured 503 with no
     database detail (Phase 8A).
+
+    Every outcome emits exactly one best-effort audit event through
+    ``request.app.state.audit`` (M3.2): ``job_created`` after a successful
+    persist, ``job_create_rejected`` on the approved rejection paths with a
+    closed reason code.  An emission problem never changes this response.
     """
 
     if body.target not in TARGET_FORMAT_POLICY:
+        # The unmapped target is outside the closed target set, so the
+        # rejection event carries the closed reason only - never the
+        # user-controlled value itself.
+        _emit_audit(request, event=EVENT_JOB_CREATE_REJECTED, reason=UNKNOWN_TARGET_ERROR)
         raise HTTPException(
             status_code=422,
             detail=unknown_target_detail(body.target),
@@ -161,18 +251,56 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
         # An explicitly supplied (even empty) identifier is validated, never
         # silently downgraded to "no association": that would hide client bugs
         # the way the old implicit target default did.
-        instance = resolve_target_instance_store(request).get(instance_id)
+        try:
+            instance_store = resolve_target_instance_store(request)
+        except HTTPException:
+            _emit_audit(
+                request,
+                event=EVENT_JOB_CREATE_REJECTED,
+                reason=PERSISTENCE_ERROR,
+                target=body.target,
+                instance_id=_canonical_uuid_or_none(instance_id),
+            )
+            raise
+        instance = instance_store.get(instance_id)
         if instance is None:
+            _emit_audit(
+                request,
+                event=EVENT_JOB_CREATE_REJECTED,
+                reason=INSTANCE_NOT_FOUND_ERROR,
+                target=body.target,
+                instance_id=_canonical_uuid_or_none(instance_id),
+            )
             raise HTTPException(
                 status_code=422,
                 detail=instance_not_found_detail(instance_id),
             )
         if instance.target_type != body.target:
+            _emit_audit(
+                request,
+                event=EVENT_JOB_CREATE_REJECTED,
+                reason=INSTANCE_TYPE_MISMATCH_ERROR,
+                target=body.target,
+                instance_id=_canonical_uuid_or_none(instance_id),
+            )
             raise HTTPException(
                 status_code=422,
                 detail=instance_type_mismatch_detail(body.target, instance.target_type),
             )
         instance_target_type = instance.target_type
+
+    try:
+        job_store = resolve_job_store(request)
+    except HTTPException:
+        # Miswired (wrong-typed) job store: the shared fail-closed 503.
+        _emit_audit(
+            request,
+            event=EVENT_JOB_CREATE_REJECTED,
+            reason=PERSISTENCE_ERROR,
+            target=body.target,
+            instance_id=_canonical_uuid_or_none(instance_id),
+        )
+        raise
 
     try:
         job = create_job(
@@ -184,13 +312,35 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
             reference=body.reference,
             instance_id=instance_id,
             instance_target_type=instance_target_type,
-            store=resolve_job_store(request),
+            store=job_store,
         )
     except JobPersistenceError as exc:
+        # Nothing was persisted: the approved persistence rejection only,
+        # never a job_created for a record that does not exist.
+        _emit_audit(
+            request,
+            event=EVENT_JOB_CREATE_REJECTED,
+            reason=PERSISTENCE_ERROR,
+            target=body.target,
+            instance_id=_canonical_uuid_or_none(instance_id),
+        )
         raise HTTPException(
             status_code=503,
             detail=persistence_unavailable_detail(),
         ) from exc
+    # Exactly one job_created, emitted only now that persistence succeeded,
+    # reflecting the persisted record (SIMULATED / DENIED / FAILED).  The
+    # simulated path's empty failure_reason is mapped to omission inside
+    # ``emit`` (M3.1 finding F2); an absent association is ``None``.
+    _emit_audit(
+        request,
+        event=EVENT_JOB_CREATED,
+        job_id=job.job_id,
+        target=job.target,
+        status=job.status.value,
+        reason=job.failure_reason,
+        instance_id=_canonical_uuid_or_none(job.instance_id),
+    )
     return JobInfo.model_validate(job.as_dict())
 
 
@@ -302,6 +452,59 @@ def detail(job_id: str, request: Request) -> JobInfo:
     if job is None:
         raise job_not_found()
     return JobInfo.model_validate(job.as_dict())
+
+
+class _ExportJSONResponse(JSONResponse):
+    """JSON response pinned to the export contract's media type.
+
+    Starlette's ``JSONResponse`` answers bare ``application/json`` (the
+    charset suffix is auto-appended only for ``text/*``), and FastAPI
+    *appends* - never replaces - headers set on an injected ``Response``,
+    which would duplicate ``content-type``.  The export route therefore
+    declares this response class once so the header is exactly
+    ``application/json; charset=utf-8`` on a single line.  Body rendering is
+    inherited unchanged from ``JSONResponse``.
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+
+@router.get(
+    "/{job_id}/export",
+    response_model=JobExportEnvelope,
+    response_class=_ExportJSONResponse,
+)
+def export_job(job_id: str, request: Request, response: Response) -> JobExportEnvelope:
+    """Export one recorded job as a versioned, downloadable JSON envelope.
+
+    Read-only by construction: one in-memory ``store.get`` and the same
+    authoritative ``JobInfo`` conversion the detail route uses - no store
+    mutation, no database touch, no discovery, no adapter or refresh-service
+    invocation, and the job's status and record are never altered.  Only the
+    persisted record is read, so the capability evidence stays the
+    creation-time snapshot it always was; the current registry is never
+    consulted.
+
+    The attachment filename derives exclusively from the server-minted UUID
+    on the stored record; the operator ``reference`` - and every other
+    free-text field - appears only as JSON data in the body, never in a
+    header.  Malformed and unknown IDs answer the existing ``job_not_found``
+    404 contract, identical to the detail route.
+    """
+
+    store = resolve_job_store(request)
+    job = store.get(job_id)
+    if job is None:
+        raise job_not_found()
+    # ``job.job_id`` is the server-minted UUID from the stored record (the
+    # lookup succeeded), and no other value can reach the header.
+    response.headers["Content-Disposition"] = f'attachment; filename="passorch-job-{job.job_id}.json"'
+    return JobExportEnvelope(
+        schema_version="1",
+        exported_at=int(time.time()),
+        simulation_only=True,
+        job=JobInfo.model_validate(job.as_dict()),
+    )
 
 
 @router.delete("/{job_id}")

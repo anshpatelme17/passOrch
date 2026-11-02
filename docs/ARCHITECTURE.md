@@ -57,7 +57,12 @@ persistence (app/engines/*_persistence.py over persistence.py)
 
 Reads (`GET /api/jobs*`, `GET /api/target-instances*`, `GET /health`, …) are
 side-effect free by contract (AST- and bytes/mtime-locked in the test suite)
-and are served from the in-memory stores.
+and are served from the in-memory stores. `GET /api/jobs/{job_id}/export` is
+one such read: it converts exactly one stored record through the same
+authoritative `JobInfo` path as the detail route and wraps it in the strict
+`JobExportEnvelope` (`schema_version`, `exported_at`, `simulation_only`,
+`job`) with an attachment filename derived from the job UUID — one store
+read, no writes, no registry lookup, no execution.
 
 ## Module map
 
@@ -66,7 +71,7 @@ and are served from the in-memory stores.
 | API shell | `app/api/app.py` | Factory, guards middleware, health, SPA mount |
 | API guards | `app/api/auth.py`, `app/api/rate_limit.py` | Bearer check, limits, structured details |
 | API errors | `app/api/errors.py` | One structured error envelope (`{"error": code, "detail": message}`) for every manually raised HTTP error |
-| Routes | `app/api/routes/{jobs,targets,engines,target_instances}.py` | HTTP contracts |
+| Routes | `app/api/routes/{jobs,targets,engines,engine_refresh,target_instances}.py` | HTTP contracts (`engine_refresh` is the guarded metadata-only `POST /api/engines/refresh`; `jobs` also serves the read-only `GET /api/jobs/{job_id}/export` audit-trail attachment) |
 | Schemas | `app/api/schemas.py` | Strict request/response models |
 | Orchestration | `app/core/orchestrator/*` | Job/instance/plan assembly |
 | Policy & selection | `app/engines/{execution_policy,selection,capabilities}.py` | Fail-closed authorisation, engine choice |
@@ -94,8 +99,8 @@ The adapter/selection/policy/discovery-core files listed above are
 
 * `frontend/js/api.js` — the only fetch site; URL prefixes are allowlisted
   (`/api/`, `/health`).
-* `frontend/js/views/*.js` — one module per SPA view (dashboard, targets,
-  jobs, instances, plan); rendering goes through `components.js` helpers that
+* `frontend/js/views/*.js` — one module per SPA view (dashboard, engines,
+  targets, jobs, instances, plan); rendering goes through `components.js` helpers that
   set `textContent` only (no `innerHTML` anywhere).
 * No bundler, no framework, no external assets; the app serves `index.html`
   and `/js/*` directly.
@@ -105,7 +110,10 @@ The adapter/selection/policy/discovery-core files listed above are
 * No cracking engine is ever executed; the only subprocess wiring is
   allowlisted engine *discovery* (`shell=False`, fixed binaries, timeout,
   captured output).
-* No GET endpoint triggers discovery, refresh, or any write.
+* No GET endpoint triggers discovery, refresh, or any write. The only
+  discovery trigger is the guarded `POST /api/engines/refresh`
+  (metadata-only, allowlisted operations — see README "Engine discovery
+  refresh"), reached solely by an explicit operator action.
 * `ExecutionPolicy.authorize` is the single fail-closed gate for execution.
 * Unmapped targets and unsupported modes produce structured denials, never
   transport-level side effects.

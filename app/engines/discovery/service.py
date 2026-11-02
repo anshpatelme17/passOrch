@@ -25,11 +25,15 @@ Security boundary:
   never stored in the registry, the report or any payload;
 * ``UNKNOWN`` / ``ERROR`` semantics are preserved verbatim from the verified
   parsers - this module never upgrades evidence;
-* the service is code/test-invoked only - **no HTTP endpoint triggers it**
-  in Phase 3A.
+* this module wires no transport of its own. Since M1.1 the only HTTP
+  trigger is ``POST /api/engines/refresh`` (``app/api/routes/engine_refresh.py``),
+  which resolves the injected service and calls ``refresh`` **without
+  parameterising it** - operations still come exclusively from the internal
+  allowlist table above, never from the request.
 
-There is deliberately no HTTP refresh endpoint here: refreshing is a local,
-explicit, code-level action.
+Whether refresh is code/test-invoked or reached over HTTP it stays
+metadata-only: no path through this service performs a password audit or
+any cracking operation.
 """
 
 from __future__ import annotations

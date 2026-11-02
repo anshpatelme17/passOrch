@@ -227,3 +227,31 @@ export function placeholder(title, note) {
     ],
   });
 }
+
+/* ---- download ----------------------------------------------------------- */
+
+/**
+ * Trigger a browser download of `blob` under the exact `filename`.
+ *
+ * Lives here (not in a view) because creating and mounting an element is a
+ * DOM write. The anchor is built with `h`, so its `href` and `download`
+ * values reach the element only as `setAttribute` attributes - never as
+ * parsed markup - and the click fires immediately on that one anchor. The
+ * object URL is revoked on the next statement (synchronously; no timer), the
+ * anchor is removed again, and in a detached-DOM environment with no
+ * `document.body` the click still fires on the detached anchor.
+ */
+export function downloadBlob(blob, filename) {
+  const link = h("a", {
+    attrs: [
+      ["href", URL.createObjectURL(blob)],
+      ["download", String(filename)],
+    ],
+  });
+  if (document.body) {
+    document.body.appendChild(link);
+  }
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.getAttribute("href"));
+}

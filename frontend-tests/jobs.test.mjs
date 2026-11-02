@@ -409,6 +409,202 @@ describe("jobs - details", () => {
   });
 });
 
+describe("jobs - export", () => {
+  const EXPORT_PATH = `GET /api/jobs/${FULL}/export`;
+  const ENVELOPE = {
+    schema_version: "1",
+    exported_at: 1793150000,
+    simulation_only: true,
+    job: simulatedJob(null, FULL),
+  };
+
+  /** Route one job's detail plus its M2.1 export envelope. */
+  function withDetailAndExport(extra) {
+    env = setup({
+      "GET /api/targets": { status: 200, body: CATALOG },
+      "GET /api/target-instances": { status: 200, body: INSTANCES },
+      "GET /api/jobs": { status: 200, body: TWO_JOBS },
+      "GET /api/jobs/11111111-1111-4111-8111-111111111111": {
+        status: 200,
+        body: simulatedJob(null, FULL),
+      },
+      [EXPORT_PATH]: { status: 200, body: ENVELOPE },
+      ...(extra || {}),
+    });
+    return env;
+  }
+
+  /** Open the first job's detail panel through the real list button. */
+  async function openDetail() {
+    showRoute("#/jobs");
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Details"));
+    await flush(12);
+  }
+
+  /** Spy on object-URL creation/revocation around `fn`. */
+  async function withDownloadSpy(fn) {
+    const created = [];
+    const revoked = [];
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (blob) => {
+      const url = originalCreate.call(URL, blob);
+      created.push({ blob, url });
+      return url;
+    };
+    URL.revokeObjectURL = (url) => {
+      revoked.push(url);
+      originalRevoke.call(URL, url);
+    };
+    try {
+      await fn({ created, revoked });
+    } finally {
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
+  }
+
+  it("offers Export JSON in the opened detail but never fetches it unasked", async () => {
+    withDetailAndExport();
+    await openDetail();
+    assert.ok(btn("Export JSON"), "the detail panel must offer the export");
+    assert.equal(env.calls.filter((c) => c.url.includes("/export")).length, 0);
+  });
+
+  it("requests the export endpoint on click and downloads the exact envelope", async () => {
+    withDetailAndExport();
+    await openDetail();
+    await withDownloadSpy(async ({ created, revoked }) => {
+      click(btn("Export JSON"));
+      await flush();
+      const exportCalls = env.calls.filter((c) => c.url.includes("/export"));
+      assert.equal(exportCalls.length, 1);
+      assert.equal(exportCalls[0].method, "GET");
+      assert.equal(exportCalls[0].url, `/api/jobs/${FULL}/export`);
+      assert.equal(created.length, 1, "one blob must be produced");
+      assert.equal(created[0].blob.type, "application/json");
+      assert.equal(await created[0].blob.text(), JSON.stringify(ENVELOPE));
+      assert.equal(revoked.length, 1, "the object URL must be revoked");
+      assert.equal(revoked[0], created[0].url);
+      assert.match(rootText(root()), /Export downloaded as a JSON file/);
+      // the job record is still on the page - the export replaced nothing
+      assert.match(rootText(root()), /Job 11111111-1111-4111-8111-111111111111/);
+    });
+  });
+
+  it("names the file after the job id, never the operator reference", async () => {
+    const job = simulatedJob(null, FULL);
+    job.preview.request.reference = 'evil"; filename="pwn';
+    withDetailAndExport({
+      [EXPORT_PATH]: { status: 200, body: { ...ENVELOPE, job } },
+    });
+    await openDetail();
+    // give the download a real body so the temporary anchor is mounted
+    const body = env.document.createElement("body");
+    globalThis.document.body = body;
+    const mounted = [];
+    const originalAppend = body.appendChild.bind(body);
+    body.appendChild = (node) => {
+      mounted.push(node);
+      return originalAppend(node);
+    };
+    try {
+      click(btn("Export JSON"));
+      await flush();
+      assert.equal(mounted.length, 1);
+      const anchor = mounted[0];
+      assert.equal(anchor.tagName, "A");
+      assert.equal(anchor.getAttribute("download"), `passorch-job-${FULL}.json`);
+      assert.match(anchor.getAttribute("href"), /^blob:/);
+      assert.equal(anchor.getAttribute("download").includes("evil"), false);
+      // the temporary anchor is removed again
+      assert.equal(body.childNodes.length, 0);
+    } finally {
+      delete globalThis.document.body;
+    }
+  });
+
+  it("reports a 404 export as a failure and downloads nothing", async () => {
+    withDetailAndExport({
+      [EXPORT_PATH]: {
+        status: 404,
+        body: { detail: { error: "job_not_found", detail: "job does not exist" } },
+      },
+    });
+    await openDetail();
+    await withDownloadSpy(async ({ created }) => {
+      click(btn("Export JSON"));
+      await flush();
+      assert.equal(created.length, 0);
+      assert.match(rootText(root()), /job_not_found/);
+      assert.match(rootText(root()), /The export was not generated\./);
+    });
+  });
+
+  it("treats a transport failure as a failed export", async () => {
+    withDetailAndExport();
+    const delegate = globalThis.fetch;
+    globalThis.fetch = (url, options) => {
+      if (String(url).includes("/export")) {
+        return Promise.reject(new Error("offline"));
+      }
+      return delegate(url, options);
+    };
+    await openDetail();
+    await withDownloadSpy(async ({ created }) => {
+      click(btn("Export JSON"));
+      await flush(12);
+      assert.equal(created.length, 0);
+      assert.match(rootText(root()), /The export was not generated\./);
+    });
+  });
+
+  it("refuses to download a 200 whose body is not JSON", async () => {
+    withDetailAndExport({
+      // raw-text spec: an implied 200 whose body cannot be parsed
+      [EXPORT_PATH]: "<html>not the envelope</html>",
+    });
+    await openDetail();
+    await withDownloadSpy(async ({ created }) => {
+      click(btn("Export JSON"));
+      await flush();
+      assert.equal(created.length, 0, "an unparseable body must never become a file");
+      assert.match(rootText(root()), /The export was not generated\./);
+    });
+  });
+
+  it("ignores a second click while the first export is in flight", async () => {
+    withDetailAndExport();
+    await openDetail();
+    click(btn("Export JSON"));
+    click(btn("Export JSON")); // same tick: the guard must swallow it
+    await flush();
+    assert.equal(env.calls.filter((c) => c.url.includes("/export")).length, 1);
+  });
+
+  it("allows a fresh export after a failed one", async () => {
+    let fail = true;
+    withDetailAndExport({
+      [EXPORT_PATH]: () =>
+        fail
+          ? { status: 404, body: { detail: { error: "job_not_found" } } }
+          : { status: 200, body: ENVELOPE },
+    });
+    await openDetail();
+    click(btn("Export JSON"));
+    await flush();
+    assert.match(rootText(root()), /The export was not generated\./);
+    fail = false;
+    await withDownloadSpy(async ({ created }) => {
+      click(btn("Export JSON"));
+      await flush();
+      assert.equal(created.length, 1);
+      assert.match(rootText(root()), /Export downloaded as a JSON file/);
+    });
+  });
+});
+
 describe("jobs - messaging and safety", () => {
   it("keeps the simulation-only notice in every state", async () => {
     for (const routes of [{}, { "GET /api/jobs": { status: 200, body: EMPTY_LIST } }]) {

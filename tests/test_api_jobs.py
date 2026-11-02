@@ -7,6 +7,10 @@ Covers:
 * GET /api/jobs: empty list, newest-first, count, non-mutating.
 * GET /api/jobs/{job_id}: fetch, malformed/unknown -> 404 (job_not_found),
   GET does not create/trigger discovery, denied preserved.
+* GET /api/jobs/{job_id}/export (M2.1): versioned envelope matching the
+  detail record, read-only, headers from the job UUID only, historical
+  (creation-time) evidence only, persistence round-trip, no refresh/adapter
+  invocation, sensitive data excluded.
 * Integration/security: existing endpoints remain usable, forbidden fields
   never appear in responses, no discovery refresh invoked, no execution calls.
 """
@@ -14,13 +18,15 @@ Covers:
 from __future__ import annotations
 
 import ast
+import time
+import uuid
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.app import create_app
-from app.engines.adapter import FORBIDDEN_REQUEST_FIELDS
+from app.engines.adapter import FORBIDDEN_REQUEST_FIELDS, MockEngineAdapter
 from app.engines.discovery.models import (
     CapabilityStatus,
     EngineCapabilities,
@@ -28,7 +34,9 @@ from app.engines.discovery.models import (
     JOHN,
 )
 from app.engines.discovery.registry import FORBIDDEN_PAYLOAD_KEYS, DiscoveryRegistry
-from app.engines.jobs import JobStore, default_job_store
+from app.engines.discovery.service import CapabilityRefreshService
+from app.engines.job_persistence import PersistentJobStore
+from app.engines.jobs import AuditJob, JobStatus, JobStore, default_job_store
 from app.engines.target_instances import TargetInstanceStore, default_target_instance_store
 
 JOBS_ROUTE_MODULE = Path("app/api/routes/jobs.py")
@@ -248,6 +256,34 @@ def test_post_jobs_rejects_extra_fields() -> None:
     assert len(client.app.state.job_store) == 0
 
 
+def test_post_jobs_rejects_client_supplied_job_id() -> None:
+    """The strict schema keeps ``job_id`` server-minted, never client-supplied.
+
+    Pins the F6 audit invariant: an HTTP client cannot choose a job
+    identifier, so the duplicate-id / forged-id paths stay unreachable
+    over the transport (the service-level ``job_id`` injection remains
+    an internal-only capability).
+    """
+
+    client = _client()
+    supplied = "00000000-0000-0000-0000-000000000000"
+    res = client.post(
+        "/api/jobs",
+        json={"target": "pdf-document", "job_id": supplied},
+    )
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert isinstance(detail, list)
+    assert detail[0]["loc"] == ["body", "job_id"]
+    assert detail[0]["type"] == "extra_forbidden"
+    assert not _forbidden_keys(res.json())
+
+    # the rejected request stored nothing, and the supplied id names no job
+    store = client.app.state.job_store
+    assert len(store) == 0
+    assert store.get(supplied) is None
+
+
 def test_post_jobs_returns_distinct_job_ids_across_calls() -> None:
     client = _client()
     r1 = client.post("/api/jobs", json={"target": "pdf-document"}).json()
@@ -363,6 +399,285 @@ def test_get_job_preserves_denied_status() -> None:
     assert got["status"] == "denied"
     assert got["failure_reason"] == "non_simulation_request"
     assert not _forbidden_keys(got)
+
+
+# --------------------------------------------------------------------------- #
+# GET /api/jobs/{job_id}/export (M2.1 - job audit-trail export)
+# --------------------------------------------------------------------------- #
+
+
+def test_export_returns_versioned_envelope_matching_the_detail_record() -> None:
+    store = JobStore()
+    c = _client(store=store)
+    created = c.post(
+        "/api/jobs", json={"target": "pdf-document", "reference": "quarterly audit"}
+    ).json()
+    jid = created["job_id"]
+
+    before = int(time.time())
+    res = c.get(f"/api/jobs/{jid}/export")
+    after = int(time.time())
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body) == {"schema_version", "exported_at", "simulation_only", "job"}
+    assert body["schema_version"] == "1"
+    assert body["simulation_only"] is True
+    assert isinstance(body["exported_at"], int) and not isinstance(body["exported_at"], bool)
+    assert before - 1 <= body["exported_at"] <= after + 1
+    # the authoritative job graph: field-for-field the detail GET's record
+    assert body["job"] == c.get(f"/api/jobs/{jid}").json()
+    assert body["job"]["created_at"] == created["created_at"]
+    assert body["job"]["preview"]["request"]["reference"] == "quarterly audit"
+    assert not _forbidden_keys(body)
+
+    # stable serialization: two exports of one record differ only in exported_at
+    again = c.get(f"/api/jobs/{jid}/export").json()
+    body.pop("exported_at")
+    again.pop("exported_at")
+    assert body == again
+
+
+def test_export_denied_job_reports_structured_denial_without_plan_or_simulation() -> None:
+    store = JobStore()
+    c = _client(store=store)
+    created = c.post("/api/jobs", json={"target": "pdf-document", "mode": "real"}).json()
+    body = c.get(f"/api/jobs/{created['job_id']}/export").json()
+    job = body["job"]
+    assert body["schema_version"] == "1"
+    assert job["status"] == "denied"
+    assert job["failure_reason"] == "non_simulation_request"
+    assert job["preview"]["authorization"]["status"] == "denied"
+    assert job["preview"]["authorization"]["authorized"] is False
+    # nothing fabricated: the model's null plan/simulation stay null
+    assert job["preview"]["plan"] is None
+    assert job["preview"]["simulation"] is None
+    assert not _forbidden_keys(body)
+
+
+def test_export_failed_job_keeps_a_null_preview() -> None:
+    store = JobStore()
+    failed = AuditJob(
+        job_id=str(uuid.uuid4()),
+        status=JobStatus.FAILED,
+        created_at=1_700_000_000,
+        target="pdf-document",
+        failure_reason="no_preview",
+    )
+    store.put(failed)
+    c = _client(store=store)
+    body = c.get(f"/api/jobs/{failed.job_id}/export").json()
+    job = body["job"]
+    assert job["status"] == "failed"
+    assert job["failure_reason"] == "no_preview"
+    assert job["created_at"] == 1_700_000_000
+    assert job["preview"] is None
+    assert job["instance_id"] == ""
+    assert not _forbidden_keys(body)
+
+
+def test_export_missing_job_returns_the_existing_not_found_envelope() -> None:
+    c = _client()
+    for path in (
+        "/api/jobs/00000000-0000-4000-8000-000000000000/export",
+        "/api/jobs/not-a-uuid/export",
+    ):
+        res = c.get(path)
+        assert res.status_code == 404
+        assert res.json() == {
+            "detail": {"error": "job_not_found", "detail": "job does not exist"}
+        }
+        assert res.headers.get("content-disposition") is None
+        assert not _forbidden_keys(res.json())
+
+
+def test_export_headers_declare_a_uuid_derived_json_attachment() -> None:
+    store = JobStore()
+    c = _client(store=store)
+    created = c.post("/api/jobs", json={"target": "pdf-document"}).json()
+    jid = created["job_id"]
+    res = c.get(f"/api/jobs/{jid}/export")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/json; charset=utf-8"
+    assert res.headers["content-disposition"] == f'attachment; filename="passorch-job-{jid}.json"'
+    # exactly one content-type line (no appended duplicate from a merge)
+    assert res.headers.get_list("content-type") == ["application/json; charset=utf-8"]
+    # global guard preserved on the new endpoint
+    assert res.headers.get("x-content-type-options") == "nosniff"
+
+
+def test_export_filename_and_headers_ignore_the_operator_reference() -> None:
+    """Free text (quotes, CRLF, unicode) stays JSON body data - never a header."""
+
+    nasty = 'evil";\r\nX-Backdoor: yes\r\n filename="pwn.json | ré ✓ 密码'
+    store = JobStore()
+    c = _client(store=store)
+    created = c.post(
+        "/api/jobs", json={"target": "pdf-document", "reference": nasty}
+    ).json()
+    res = c.get(f"/api/jobs/{created['job_id']}/export")
+    assert res.status_code == 200
+
+    disposition = res.headers["content-disposition"]
+    assert disposition == f'attachment; filename="passorch-job-{created["job_id"]}.json"'
+    assert "\r" not in disposition and "\n" not in disposition
+    assert "X-Backdoor" not in res.headers
+    # no raw control bytes and no raw reference text anywhere in the headers
+    assert not any("\r" in value or "\n" in value for value in res.headers.values())
+    # the body is single-line JSON (control characters are escaped by encoding)
+    assert b"\r" not in res.content
+    assert b"\n" not in res.content
+    # ...and the reference survives verbatim as JSON data
+    assert res.json()["job"]["preview"]["request"]["reference"] == nasty
+
+
+def test_export_is_read_only_store_and_record_are_unchanged() -> None:
+    store = JobStore()
+    c = _client(store=store)
+    jid = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+    before_job = store.get(jid)
+    before_len = len(store)
+    res = c.get(f"/api/jobs/{jid}/export")
+    assert res.status_code == 200
+    assert len(store) == before_len
+    # the identical record object: never replaced, re-serialised in place or
+    # status-mutated (identity proves no write path was taken)
+    assert store.get(jid) is before_job
+    assert before_job is not None and before_job.status.value == "simulated"
+    assert store.get(jid).status.value == "simulated"  # type: ignore[union-attr]
+
+
+def test_export_never_invokes_discovery_refresh_or_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither the refresh service nor an adapter can be reached by an export."""
+
+    store = JobStore()
+    c = _client(store=store)
+    jid = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    refresh_calls: list[str] = []
+    simulate_calls: list[str] = []
+    monkeypatch.setattr(
+        CapabilityRefreshService,
+        "refresh",
+        lambda self, *args, **kwargs: refresh_calls.append("refresh"),
+    )
+    monkeypatch.setattr(
+        MockEngineAdapter,
+        "simulate",
+        lambda self, *args, **kwargs: simulate_calls.append("simulate"),
+    )
+    assert c.get(f"/api/jobs/{jid}/export").status_code == 200
+    assert refresh_calls == []
+    assert simulate_calls == []
+
+
+def test_export_shows_creation_time_evidence_not_the_current_registry() -> None:
+    """Historical accuracy: a later capability change never rewrites history."""
+
+    registry = _registry(VERIFIED)
+    store = JobStore()
+    c = _client(registry=registry, store=store)
+    jid = c.post("/api/jobs", json={"target": "pdf-document"}).json()["job_id"]
+
+    # a subsequent refresh downgrades the engine's *current* evidence
+    registry.set_capabilities(
+        JOHN,
+        EngineCapabilities(engine=JOHN, capability_status=UNKNOWN, reason="refresh_failed"),
+    )
+    body = c.get(f"/api/jobs/{jid}/export").json()
+    preview = body["job"]["preview"]
+    assert preview["selection"]["selected_engine"] == "john"
+    assert preview["request"]["capability_status"] == "verified"
+    assert preview["request"]["matched_formats"] == ["pdf"]
+    # while the live registry now says otherwise - and is not in the export
+    engines = c.get("/api/engines").json()["engines"]
+    assert engines[0]["capability_status"] == "unknown"
+
+
+def test_export_of_a_hydrated_job_matches_the_original(tmp_path: Path) -> None:
+    db = tmp_path / "jobs.db"
+    c = _client(store=PersistentJobStore(db))
+    jid = c.post(
+        "/api/jobs", json={"target": "pdf-document", "reference": "persist-me"}
+    ).json()["job_id"]
+    original = c.get(f"/api/jobs/{jid}/export").json()
+
+    # a fresh store hydrates the record from the database (process restart)
+    c2 = _client(store=PersistentJobStore(db))
+    hydrated = c2.get(f"/api/jobs/{jid}/export").json()
+
+    assert isinstance(original.pop("exported_at"), int)
+    assert isinstance(hydrated.pop("exported_at"), int)
+    assert hydrated == original
+    assert hydrated["job"]["preview"]["request"]["reference"] == "persist-me"
+
+
+def test_export_keeps_the_existing_get_auth_posture() -> None:
+    """With the bearer token enabled, reads (detail and export) stay open
+    and mutations stay guarded - M2.1 introduces no new auth policy."""
+
+    token = "m21-export-token"
+    c = TestClient(
+        create_app(
+            discovery_registry=_registry(VERIFIED),
+            job_store=JobStore(),
+            api_token=token,
+        )
+    )
+    created = c.post(
+        "/api/jobs",
+        json={"target": "pdf-document"},
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+    jid = created["job_id"]
+    assert c.get(f"/api/jobs/{jid}").status_code == 200
+    assert c.get(f"/api/jobs/{jid}/export").status_code == 200
+    assert c.delete(f"/api/jobs/{jid}").status_code == 401
+
+
+def test_export_route_does_not_capture_static_job_routes() -> None:
+    store = JobStore()
+    c = _client(store=store)
+    c.post("/api/jobs", json={"target": "pdf-document"})
+    stats = c.get("/api/jobs/stats")
+    assert stats.status_code == 200
+    assert set(stats.json()) >= {"total", "simulated", "denied", "failed"}
+    listing = c.get("/api/jobs")
+    assert listing.status_code == 200
+    assert listing.json()["count"] == 1
+    # the dynamic export path treats "stats" as an (absent) job id
+    stray = c.get("/api/jobs/stats/export")
+    assert stray.status_code == 404
+    assert stray.json()["detail"]["error"] == "job_not_found"
+
+
+def test_export_route_handler_makes_only_the_allowed_calls() -> None:
+    """Static boundary on the handler itself: store reads and envelope
+    construction only - no refresh, adapter, runner or process call."""
+
+    tree = ast.parse(JOBS_ROUTE_MODULE.read_text(encoding="utf-8"))
+    handler = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "export_job"
+    )
+    called = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name))
+    }
+    assert called == {
+        "resolve_job_store",
+        "get",
+        "job_not_found",
+        "as_dict",
+        "model_validate",
+        "JobExportEnvelope",
+        "int",
+        "time",
+    }
 
 
 # --------------------------------------------------------------------------- #

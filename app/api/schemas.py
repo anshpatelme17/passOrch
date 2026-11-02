@@ -8,20 +8,28 @@ plan steps and simulation outcomes.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.engines.discovery.models import CapabilityStatus
 
 __all__ = [
     "AuthorizationInfo",
     "EngineInfo",
+    "EngineRefreshReport",
     "EnginesResponse",
     "JobInfo",
     "JobCreateRequest",
+    "JobExportEnvelope",
     "JobListResponse",
     "JobPageResponse",
     "JobSummary",
     "PlanInfo",
     "PlanPreviewRequest",
     "PlanPreviewResponse",
+    "RefreshEnginesRequest",
+    "RefreshEnginesResponse",
     "RequestInfo",
     "SelectionInfo",
     "SimulationInfo",
@@ -182,6 +190,51 @@ class EnginesResponse(_Strict):
     engines: list[EngineInfo]
 
 
+class RefreshEnginesRequest(_Strict):
+    """Optional body for ``POST /api/engines/refresh``.
+
+    The **only** client-selectable input is a list of known engine *names*
+    (``engines``).  ``None`` (missing body, ``{}`` or ``null``) refreshes every
+    known engine; an explicit list refreshes only those engines, in the
+    request's order, with the service's own de-duplication.
+
+    There is deliberately no field for executable paths, binary names,
+    commands, subprocess arguments, probe operations, parsers, timeouts,
+    output limits or verification status: ``extra="forbid"`` rejects any
+    unknown key at the transport layer, and the refresh service decides every
+    operation internally.
+
+    Unknown engine names are *not* rejected here - they reach the service,
+    which fails the whole subset closed (``404 unknown_engine``) before any
+    probe runs, so a mixed valid/invalid list never refreshes anything.
+    """
+
+    engines: list[str] | None = None
+
+
+class EngineRefreshReport(_Strict):
+    """One engine's refresh outcome - the ``RefreshReport`` field set, verbatim.
+
+    Mirrors :meth:`app.engines.discovery.service.RefreshReport.as_dict`
+    exactly: the same five fields, no more.  ``capability_status`` is the
+    closed :class:`~app.engines.discovery.models.CapabilityStatus` enum, so an
+    unsupported status can never be serialised, and raw probe output, command
+    details and exception text are structurally impossible here.
+    """
+
+    engine: str
+    discovered: bool
+    capability_status: CapabilityStatus
+    reason: str = ""
+    truncated: bool = False
+
+
+class RefreshEnginesResponse(_Strict):
+    """Result of one refresh: deterministic per-engine reports, nothing else."""
+
+    engines: list[EngineRefreshReport]
+
+
 class JobSummary(_Strict):
     """One audit job as shown in the (read-only) job list."""
 
@@ -234,6 +287,29 @@ class JobStatsResponse(_Strict):
     failed: int = 0
     by_status: dict[str, int] = {}
     by_target: dict[str, int] = {}
+
+
+class JobExportEnvelope(_Strict):
+    """Versioned download envelope for ``GET /api/jobs/{job_id}/export``.
+
+    ``job`` is exactly :class:`JobInfo` - the authoritative record the detail
+    endpoint returns - so an export can never carry more (or less) than the
+    persisted job graph: the operator ``reference`` when the job has one, and
+    a ``None`` preview for failed jobs, both preserved verbatim.  Nothing
+    outside the persisted record (in particular the current capability
+    registry) ever reaches this envelope.
+
+    ``schema_version`` pins the envelope contract for consumers,
+    ``exported_at`` records when *this* artifact was produced (never the
+    job's ``created_at``), and ``simulation_only`` makes the no-execution
+    boundary part of the artifact itself.  ``extra="forbid"`` keeps
+    serialization fail-closed: an unknown key raises instead of leaking.
+    """
+
+    schema_version: Literal["1"]
+    exported_at: int
+    simulation_only: Literal[True]
+    job: JobInfo
 
 
 class TargetInstance(_Strict):

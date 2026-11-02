@@ -13,8 +13,10 @@ Both endpoints are strictly read-only:
   probe output keys (``stdout``, ``stderr``, ``command``, ``argv``, ...) can
   never appear in a response.
 
-Phase 3A deliberately adds **no** refresh/probe endpoint: refreshing stays a
-code/test-invoked action through the injected service.
+This module deliberately adds **no** refresh/probe endpoint: the Phase 3A
+GET routes above stay read-only. The only refresh surface is the separate
+``POST /api/engines/refresh`` route (M1.1, ``routes/engine_refresh.py``),
+which this module never references.
 """
 
 from __future__ import annotations
