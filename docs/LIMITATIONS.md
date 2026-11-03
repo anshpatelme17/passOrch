@@ -38,7 +38,10 @@ risks are expanded in [THREAT_MODEL.md](../THREAT_MODEL.md#residual-risks-accept
 
 * **Hydrate-once stores.** Persistent stores load once at construction; a
   second process over the same database file sees a stale snapshot until it
-  restarts. There is no live cross-process visibility or replication.
+  restarts. There is no live cross-process visibility or replication, and
+  writes are not coordinated: one process's capacity eviction or delete
+  removes rows the other process still serves from memory. **Run exactly one
+  worker process per database file.**
 * **Discovery registry and refresh lock are process-local.** The capability
   registry and the non-blocking refresh lock live in one process: separate
   worker processes neither share refreshed capability state nor serialise

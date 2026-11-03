@@ -366,6 +366,21 @@ def test_plan_endpoint_bounds_reference_length() -> None:
     assert too_long.json()["detail"][0]["loc"] == ["body", "reference"]
 
 
+def test_plan_endpoint_bounds_mode_length() -> None:
+    """``mode`` is bounded like every other caller string (M-1)."""
+
+    app = create_app(discovery_registry=_registry({JOHN: VERIFIED}))
+    client = TestClient(app)
+    base = "/api/targets/pdf-document/compatibility/plan"
+
+    at_cap = client.post(base, json={"mode": "x" * 64})
+    assert at_cap.status_code == 200
+
+    too_long = client.post(base, json={"mode": "x" * 65})
+    assert too_long.status_code == 422
+    assert too_long.json()["detail"][0]["loc"] == ["body", "mode"]
+
+
 def test_plan_endpoint_never_returns_command_shaped_fields() -> None:
     app = create_app(discovery_registry=_registry({JOHN: VERIFIED}))
     client = TestClient(app)

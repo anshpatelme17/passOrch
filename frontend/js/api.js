@@ -18,6 +18,37 @@
 export const API_PREFIXES = Object.freeze(["/api/", "/health"]);
 
 /**
+ * Deadline applied to every request that does not carry its own signal.
+ *
+ * Without it a hung socket leaves the caller awaiting a promise that never
+ * settles: the view's spinner stays up and its submit guard stays latched,
+ * so the whole screen silently stops accepting input.
+ */
+export const DEFAULT_TIMEOUT_MS = 15000;
+
+/**
+ * The fixed sentence shown when the deadline above fires. Deliberately not
+ * derived from the thrown error: `TimeoutError` text is engine-specific and
+ * must never reach the DOM.
+ */
+export const TIMEOUT_MESSAGE = "The request timed out. Please try again.";
+
+/** Fixed sentence for a response whose body could not be read. */
+export const BODY_UNREADABLE_MESSAGE = "The response could not be read. Please try again.";
+
+/**
+ * A default deadline signal, or `undefined` on engines without
+ * `AbortSignal.timeout`. We degrade to "no deadline" rather than emulating one
+ * with `setTimeout`, which the safety suite forbids in frontend code.
+ */
+function defaultSignal() {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+  }
+  return undefined;
+}
+
+/**
  * Stable machine codes the backend returns in the structured object detail
  * ({"detail": {"error": code, "detail": message, ...}}).
  */
@@ -158,10 +189,12 @@ export async function request(path, options) {
       method: opts.method || "GET",
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      signal: opts.signal,
+      signal: opts.signal || defaultSignal(),
     });
   } catch (err) {
-    // Network-level failure: no status, no body.
+    // Network-level failure: no status, no body. A deadline we imposed
+    // ourselves reports a fixed sentence instead of the engine's wording.
+    const timedOut = Boolean(err) && err.name === "TimeoutError";
     return {
       ok: false,
       status: 0,
@@ -170,14 +203,33 @@ export async function request(path, options) {
       parseError: false,
       error: {
         kind: "transport",
-        message: String((err && err.message) || "network request failed"),
+        message: timedOut ? TIMEOUT_MESSAGE : String((err && err.message) || "network request failed"),
         code: "",
         detail: null,
       },
     };
   }
 
-  const parsed = await parseBody(response);
+  let parsed;
+  try {
+    parsed = await parseBody(response);
+  } catch {
+    // The body stream failed mid-read. `request()` must never reject: callers
+    // only inspect `res.error`, and the exception text is not safe to show.
+    return {
+      ok: false,
+      status: response.status,
+      data: null,
+      raw: null,
+      parseError: false,
+      error: {
+        kind: "transport",
+        message: BODY_UNREADABLE_MESSAGE,
+        code: "",
+        detail: null,
+      },
+    };
+  }
   if (response.ok) {
     return {
       ok: true,

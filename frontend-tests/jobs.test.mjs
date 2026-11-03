@@ -583,6 +583,26 @@ describe("jobs - export", () => {
     assert.equal(env.calls.filter((c) => c.url.includes("/export")).length, 1);
   });
 
+  it("reports a download failure with a fixed sentence, not the exception", async () => {
+    withDetailAndExport();
+    await openDetail();
+    const originalCreate = URL.createObjectURL;
+    URL.createObjectURL = () => {
+      throw new Error("object URLs are unavailable in this realm");
+    };
+    try {
+      click(btn("Export JSON"));
+      await flush();
+    } finally {
+      URL.createObjectURL = originalCreate;
+    }
+    const text = rootText(root());
+    assert.match(text, /The export was not generated\./);
+    assert.match(text, /did not complete|try again/i);
+    assert.doesNotMatch(text, /object URLs are unavailable/, "exception text must never reach the DOM");
+    assert.doesNotMatch(text, /Error:/, "no raw error prefix in the DOM");
+  });
+
   it("allows a fresh export after a failed one", async () => {
     let fail = true;
     withDetailAndExport({
@@ -637,5 +657,87 @@ describe("jobs - messaging and safety", () => {
     // importing the module at the top registered it; assert through the router
     showRoute("#/jobs");
     assert.doesNotThrow(() => showRoute("#/jobs"));
+  });
+});
+
+describe("jobs - in-flight guards reset on re-entry", () => {
+  it("a submit left pending across navigation does not latch the form", async () => {
+    start();
+    const fixtureFetch = env.fetch;
+    let posts = 0;
+    globalThis.fetch = (url, opts) => {
+      const method = String((opts && opts.method) || "GET").toUpperCase();
+      if (method === "POST" && String(url).startsWith("/api/jobs")) {
+        posts += 1;
+        if (posts === 1) {
+          return new Promise(() => {}); // hangs: its `finally` never runs
+        }
+      }
+      return fixtureFetch(url, opts);
+    };
+
+    showRoute("#/jobs");
+    await flush();
+    await choose("pdf-document");
+    click(btn("Create simulated job"));
+    await flush();
+    assert.equal(posts, 1, "the first submit must be issued");
+
+    // Leave while that request is still in flight, then come back.
+    showRoute("#/dashboard");
+    await flush();
+    showRoute("#/jobs");
+    await flush();
+
+    await choose("pdf-document");
+    click(btn("Create simulated job"));
+    await flush();
+    assert.equal(posts, 2, "re-entry must reset the latched submit guard");
+  });
+
+  it("a delete left pending across navigation does not latch the list", async () => {
+    start({
+      "DELETE /api/jobs/*": { status: 204, body: undefined },
+    });
+    const fixtureFetch = env.fetch;
+    let deletes = 0;
+    globalThis.fetch = (url, opts) => {
+      const method = String((opts && opts.method) || "GET").toUpperCase();
+      if (method === "DELETE" && String(url).startsWith("/api/jobs/")) {
+        deletes += 1;
+        if (deletes === 1) {
+          return new Promise(() => {});
+        }
+      }
+      return fixtureFetch(url, opts);
+    };
+
+    showRoute("#/jobs");
+    await flush();
+    const row = containing(root(), FULL);
+    assert.ok(row, "the job row must render");
+    const del = row.querySelectorAll("button").find((b) => b.textContent === "Delete");
+    assert.ok(del, "the row must offer Delete");
+    click(del);
+    await flush();
+    const yes = root().querySelectorAll("button").find((b) => b.textContent === "Yes, delete");
+    assert.ok(yes, "confirmation must be offered");
+    click(yes);
+    await flush();
+    assert.equal(deletes, 1, "the first delete must be issued");
+
+    showRoute("#/dashboard");
+    await flush();
+    showRoute("#/jobs");
+    await flush();
+
+    const row2 = containing(root(), FULL);
+    const del2 = row2.querySelectorAll("button").find((b) => b.textContent === "Delete");
+    click(del2);
+    await flush();
+    const yes2 = root().querySelectorAll("button").find((b) => b.textContent === "Yes, delete");
+    click(yes2);
+    await flush();
+    assert.equal(deletes, 2, "re-entry must reset the latched delete guard");
   });
 });

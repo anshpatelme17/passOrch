@@ -119,6 +119,35 @@ describe("parseHash", () => {
     assert.equal(parsed.path, "/dashboard");
     assert.equal(parsed.params.x, "1");
   });
+
+  it("keeps a malformed value instead of throwing on a bad escape", () => {
+    // `%zz` is not a valid hex escape: decodeURIComponent throws URIError.
+    const parsed = parseHash("#/plan?target=%zz");
+    assert.equal(parsed.path, "/plan");
+    assert.equal(parsed.params.target, "%zz");
+  });
+
+  it("keeps a malformed key instead of throwing on a bad escape", () => {
+    const parsed = parseHash("#/plan?%zz=1");
+    assert.equal(parsed.path, "/plan");
+    assert.equal(parsed.params["%zz"], "1");
+  });
+
+  it("survives a truncated escape at the end of the query", () => {
+    const parsed = parseHash("#/jobs?x=abc%");
+    assert.equal(parsed.path, "/jobs");
+    assert.equal(parsed.params.x, "abc%");
+  });
+
+  it("renders a malformed hash without taking the router down", () => {
+    // The router must still resolve the route and paint a view.
+    let info = null;
+    assert.doesNotThrow(() => {
+      info = showRoute("#/plan?target=%zz");
+    });
+    assert.equal(info.path, "/plan");
+    assert.match(rootText(root()), /Simulation only/);
+  });
 });
 
 describe("titles", () => {
@@ -283,6 +312,43 @@ describe("engines - refresh interaction", () => {
     click(btn("Refresh engines"));
     await flush();
     assert.equal(env.calls.filter((c) => c.method === "POST").length, 1);
+  });
+
+  it("a refresh left pending across navigation does not latch the button", async () => {
+    const env = start({
+      "POST /api/engines/refresh": {
+        status: 200,
+        body: { engines: [report("john", "verified")] },
+      },
+    });
+    const fixtureFetch = env.fetch;
+    let posts = 0;
+    globalThis.fetch = (url, opts) => {
+      const method = String((opts && opts.method) || "GET").toUpperCase();
+      if (method === "POST" && String(url).startsWith("/api/engines/refresh")) {
+        posts += 1;
+        if (posts === 1) {
+          return new Promise(() => {}); // hangs: its `finally` never runs
+        }
+      }
+      return fixtureFetch(url, opts);
+    };
+
+    showRoute("#/engines");
+    await flush();
+    click(btn("Refresh engines"));
+    await flush();
+    assert.equal(posts, 1, "the first refresh must be issued");
+
+    // Leave while that request is still in flight, then come back.
+    showRoute("#/dashboard");
+    await flush();
+    showRoute("#/engines");
+    await flush();
+
+    click(btn("Refresh engines"));
+    await flush();
+    assert.equal(posts, 2, "re-entry must reset the latched refresh guard");
   });
 
   it("distinguishes verified from unknown and names the unverified engine", async () => {

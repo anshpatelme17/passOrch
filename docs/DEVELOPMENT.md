@@ -16,6 +16,9 @@ python -m pip install --no-deps -e .
 ```
 
 `requirements.lock` pins every dependency with PyPI SHA-256 hashes;
+`requirements.runtime.lock` is the runtime-only subset the Docker image
+installs (the same pins and hashes, minus test/lint/typing tooling - a
+test enforces that it is an exact subset covering the runtime closure);
 `constraints.txt` is the human-readable range-pin reference;
 `pyproject.toml` keeps the compatible ranges. An optional local-only
 extra is Playwright for the browser E2E suite (see below); it is
@@ -33,13 +36,19 @@ Only from an environment that has passed the full suite:
    `name==version \` lines with one indented
    `--hash=sha256:<digest> \` per artifact (backslash continuations
    required by pip).
-3. Verify before committing:
+3. Rebuild `requirements.runtime.lock` from the finished lock: copy the
+   pin + hash blocks of the runtime closure (the packages reachable from
+   the `pyproject.toml` runtime dependencies) verbatim, keeping the file
+   header; `tests/test_deployment_artifacts.py` fails if it drifts from
+   the lock or stops covering that closure.
+4. Verify before committing:
    `python -m pip install --require-hashes --dry-run --ignore-installed -r requirements.lock`
-   must succeed (fresh-environment simulation),
+   must succeed (fresh-environment simulation) - the same dry-run against
+   `requirements.runtime.lock` must succeed too - and
    `python scripts/check_dependency_lock.py` must print "Dependency lock
    consistency check passed.", and `tests/test_deployment_artifacts.py`
    must pass.
-4. Action SHAs and the Docker base digest are pinned in `ci.yml` /
+5. Action SHAs and the Docker base digest are pinned in `ci.yml` /
    `Dockerfile`; refresh them the same way (GitHub API tag deref,
    `docker buildx imagetools inspect`) when bumping versions.
 
@@ -70,7 +79,8 @@ Before merging any Dependabot Python PR, a maintainer must regenerate
 the lock by hand following "Regenerating the pins" above:
 
 1. Update `constraints.txt` pins from a verified environment.
-2. Rebuild `requirements.lock` with every artifact hash.
+2. Rebuild `requirements.lock` with every artifact hash, then rebuild the
+   `requirements.runtime.lock` subset from it (step 3 above).
 3. Run `python -m pip install --require-hashes --dry-run --ignore-installed -r requirements.lock`.
 4. Run the full suite, Ruff, mypy, `git diff --check`, and
    `tests/test_deployment_artifacts.py`.

@@ -125,8 +125,10 @@ network peer ──► uvicorn ──► rate limit ──► bearer auth ──
    runtime.
 7. **Dependency supply chain** — application code is stdlib-only; every
    third-party artifact CI and Docker install is hash-verified from
-   `requirements.lock` (digests taken from the PyPI JSON API), GitHub
-   Actions are pinned to full commit SHAs, and the container base image
+   `requirements.lock` (digests taken from the PyPI JSON API; Docker
+   installs `requirements.runtime.lock`, a verbatim runtime-only subset of
+   the same pins), GitHub Actions are pinned to full commit SHAs, and the
+   container base image
    is pinned by registry digest. Residual exposure: pip's isolated build
    environment fetches the `setuptools` build backend without hash
    pinning, and the lock is maintained by hand (regeneration procedure in

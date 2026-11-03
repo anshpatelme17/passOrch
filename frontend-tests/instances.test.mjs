@@ -479,6 +479,48 @@ describe("instances - rendering and safety", () => {
   });
 });
 
+describe("instances - in-flight guards reset on re-entry", () => {
+  it("a create left pending across navigation does not latch the form", async () => {
+    start();
+    const fixtureFetch = env.fetch;
+    let posts = 0;
+    globalThis.fetch = (url, opts) => {
+      const method = String((opts && opts.method) || "GET").toUpperCase();
+      if (method === "POST" && String(url).startsWith("/api/target-instances")) {
+        posts += 1;
+        if (posts === 1) {
+          return new Promise(() => {}); // hangs: its `finally` never runs
+        }
+      }
+      return fixtureFetch(url, opts);
+    };
+
+    showRoute("#/instances");
+    await flush();
+    type(select("instance-name"), "First");
+    const typeSel = select("instance-type");
+    typeSel.value = "pdf-document";
+    typeSel.dispatchEvent({ type: "change", target: typeSel });
+    click(root().querySelectorAll("button").find((b) => /Create target instance/.test(b.textContent)));
+    await flush();
+    assert.equal(posts, 1, "the first submit must be issued");
+
+    // Leave while that request is still in flight, then come back.
+    showRoute("#/dashboard");
+    await flush();
+    showRoute("#/instances");
+    await flush();
+
+    type(select("instance-name"), "Second");
+    const typeSel2 = select("instance-type");
+    typeSel2.value = "pdf-document";
+    typeSel2.dispatchEvent({ type: "change", target: typeSel2 });
+    click(root().querySelectorAll("button").find((b) => /Create target instance/.test(b.textContent)));
+    await flush();
+    assert.equal(posts, 2, "re-entry must reset the latched submit guard");
+  });
+});
+
 void field;
 void FakeResponse;
 void env;

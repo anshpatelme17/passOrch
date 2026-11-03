@@ -35,6 +35,7 @@ import {
   NavLink,
   Panel,
   RetryButton,
+  SAFE_FAILURE_MESSAGE,
   StatusBadge,
   SimulationNotice,
 } from "../components.js";
@@ -52,7 +53,7 @@ const LIST_FAILED_TITLE = "Discovery completed, but the engine list could not be
 /** Structured error code -> a short, safe operator hint. No internals. */
 const REFRESH_ERROR_HINTS = {
   unauthorized:
-    "This server requires an operator token for refresh. Supply the configured token and try again.",
+    "This server requires an operator token for refresh, and the browser interface cannot supply one. Refresh from a token-aware client (for example curl with the configured bearer token) instead.",
   refresh_in_progress: "Another discovery refresh is already running. Wait for it to finish, then retry.",
   rate_limited: "Too many refresh requests. Wait for the retry window, then try again.",
   discovery_refresh_failed:
@@ -186,6 +187,12 @@ function refreshOutcomeNodes(reports) {
 /* ---- view ----------------------------------------------------------------- */
 
 async function renderEngines(root) {
+  // Reset the in-flight guard on entry: a refresh still pending from a
+  // previous visit runs against detached slots, and if it never settles the
+  // flag would stay latched - disabling this screen's only action for the
+  // rest of the session.
+  refreshing = false;
+
   const ctx = {
     controlsSlot: h("div", { class: "section-body" }),
     resultSlot: h("div", { class: "section-body" }),
@@ -321,6 +328,15 @@ async function runRefresh(ctx) {
 
     render(ctx.resultSlot, refreshOutcomeNodes(reports));
     await reloadList(ctx, listRes);
+  } catch {
+    // Rejections only: every HTTP failure is handled above with its own safe
+    // hint. A fixed sentence is shown instead of the exception text, the
+    // controls are re-enabled by the `finally`, and the list keeps whatever
+    // it last held.
+    render(ctx.resultSlot, [
+      InlineError({ kind: "error", message: SAFE_FAILURE_MESSAGE }),
+      h("p", { class: "panel__hint", text: "The refresh did not run. The engine list below is unchanged." }),
+    ]);
   } finally {
     refreshing = false;
     renderControls(ctx, false);

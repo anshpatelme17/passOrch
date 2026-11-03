@@ -15,18 +15,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencies install from the hash-verified lock (every artifact hash
-# from the PyPI JSON API); the project itself installs with --no-deps so
-# pip never re-resolves anything unlocked.  The source tree stays in
-# place because the frontend is resolved relative to the package files.
-# Note: pip's isolated build environment fetches setuptools (build
-# backend) unhashed - documented in THREAT_MODEL.md.
-COPY pyproject.toml requirements.lock ./
+# Dependencies install from the runtime-only hash-verified lock (every
+# artifact hash from the PyPI JSON API; the same pins as requirements.lock,
+# restricted to the runtime closure so no test, lint or typing tooling
+# ships in the image).  The project itself installs with --no-deps so pip
+# never re-resolves anything unlocked.  The dependency layer is copied and
+# installed before the source so it stays cacheable across source changes;
+# the source tree stays in place because the frontend is resolved relative
+# to the package files.  Note: pip's isolated build environment fetches
+# setuptools (build backend) unhashed - documented in THREAT_MODEL.md.
+COPY pyproject.toml requirements.runtime.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.runtime.lock
+
 COPY app ./app
 COPY frontend ./frontend
 
-RUN pip install --no-cache-dir --require-hashes -r requirements.lock \
-    && pip install --no-cache-dir --no-deps . \
+RUN pip install --no-cache-dir --no-deps . \
     && useradd --create-home --uid 1000 passorch \
     && mkdir -p /data \
     && chown passorch:passorch /data

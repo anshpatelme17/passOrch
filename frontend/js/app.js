@@ -63,6 +63,22 @@ export function getView(path) {
 
 /* ---- navigation --------------------------------------------------------- */
 
+/**
+ * `decodeURIComponent` that never throws.
+ *
+ * A malformed escape (`%zz`, a lone `%`) throws `URIError`, which would take
+ * the whole router down before any view rendered. The raw text is kept as the
+ * fallback: it is still just a parameter value rendered as text, and the route
+ * resolution below does not depend on it decoding successfully.
+ */
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 /** Parse `location.hash` into `{ path, params }`; unknown -> the dashboard. */
 export function parseHash(hash) {
   const raw = typeof hash === "string" && hash.startsWith("#") ? hash.slice(1) : hash || "";
@@ -75,7 +91,7 @@ export function parseHash(hash) {
     for (const pair of queryPart.split("&")) {
       const [key, value] = pair.split("=");
       if (key) {
-        params[decodeURIComponent(key)] = decodeURIComponent(value || "");
+        params[safeDecode(key)] = safeDecode(value || "");
       }
     }
   }

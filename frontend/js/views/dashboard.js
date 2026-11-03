@@ -29,6 +29,7 @@ import {
   NavLink,
   Panel,
   RetryButton,
+  SAFE_FAILURE_MESSAGE,
   SimulationNotice,
   SimulatedOnlyBadge,
   StatusBadge,
@@ -47,7 +48,7 @@ async function healthSection(slot) {
   render(slot, pending("Checking application health..."));
   const res = await api.get("/health");
   if (!res.ok) {
-    render(slot, [InlineError(res.error), RetryButton(() => healthSection(slot))]);
+    render(slot, [InlineError(res.error), RetryButton(() => runSection(healthSection, slot))]);
     return;
   }
   const data = res.data || {};
@@ -70,7 +71,7 @@ async function enginesSection(slot) {
   render(slot, pending("Loading engine capability state..."));
   const res = await api.get("/api/engines");
   if (!res.ok) {
-    render(slot, [InlineError(res.error), RetryButton(() => enginesSection(slot))]);
+    render(slot, [InlineError(res.error), RetryButton(() => runSection(enginesSection, slot))]);
     return;
   }
   const engines = asArray(res.data && res.data.engines);
@@ -103,7 +104,7 @@ async function jobsSection(slot) {
   render(slot, pending("Loading recent jobs..."));
   const res = await api.get("/api/jobs");
   if (!res.ok) {
-    render(slot, [InlineError(res.error), RetryButton(() => jobsSection(slot))]);
+    render(slot, [InlineError(res.error), RetryButton(() => runSection(jobsSection, slot))]);
     return;
   }
   const jobs = asArray(res.data && res.data.jobs);
@@ -140,7 +141,7 @@ async function instancesSection(slot) {
   render(slot, pending("Loading target instances..."));
   const res = await api.get("/api/target-instances");
   if (!res.ok) {
-    render(slot, [InlineError(res.error), RetryButton(() => instancesSection(slot))]);
+    render(slot, [InlineError(res.error), RetryButton(() => runSection(instancesSection, slot))]);
     return;
   }
   const instances = asArray(res.data && res.data.instances);
@@ -180,7 +181,7 @@ async function statisticsSection(slot) {
   render(slot, pending("Loading job statistics..."));
   const res = await api.get("/api/jobs/stats");
   if (!res.ok) {
-    render(slot, [InlineError(res.error), RetryButton(() => statisticsSection(slot))]);
+    render(slot, [InlineError(res.error), RetryButton(() => runSection(statisticsSection, slot))]);
     return;
   }
   const data = res.data || {};
@@ -243,12 +244,32 @@ function renderDashboard(root) {
   ]);
 
   // Each section owns its request; none awaits the others, so a slow or failed
-  // section cannot stall the rest of the page.
-  healthSection(healthSlot);
-  enginesSection(enginesSlot);
-  statisticsSection(statsSlot);
-  jobsSection(jobsSlot);
-  instancesSection(instancesSlot);
+  // section cannot stall the rest of the page. A section that *rejects* (never
+  // an HTTP error - those are handled inside each section) is caught here so
+  // it cannot become an unhandled rejection, and only the fixed sentence below
+  // reaches the DOM - never the exception text.
+  runSection(healthSection, healthSlot);
+  runSection(enginesSection, enginesSlot);
+  runSection(statisticsSection, statsSlot);
+  runSection(jobsSection, jobsSlot);
+  runSection(instancesSection, instancesSlot);
+}
+
+/** Start `section` in `slot`, and convert a rejection into the safe state. */
+function runSection(section, slot) {
+  const safeFailure = () => {
+    render(slot, [
+      InlineError({ kind: "error", message: SAFE_FAILURE_MESSAGE }),
+      RetryButton(() => runSection(section, slot)),
+    ]);
+  };
+  try {
+    // Sections are async, so this starts synchronously (the pending state is
+    // visible immediately) and only the eventual rejection is caught here.
+    Promise.resolve(section(slot)).catch(safeFailure);
+  } catch {
+    safeFailure();
+  }
 }
 
 /* ---- registration --------------------------------------------------------- */

@@ -72,7 +72,7 @@ from app.engines.discovery.capability_map import TARGET_FORMAT_POLICY
 from app.engines.discovery.registry import DiscoveryRegistry
 from app.engines.execution_policy import ExecutionPolicy
 from app.engines.job_persistence import JobPersistenceError
-from app.engines.jobs import AuditJob
+from app.engines.jobs import AuditJob, JobError
 
 __all__ = ["create", "detail", "export_job", "list_jobs", "router", "unknown_target_detail"]
 
@@ -314,9 +314,13 @@ def create(request: Request, body: JobCreateRequest) -> JobInfo:
             instance_target_type=instance_target_type,
             store=job_store,
         )
-    except JobPersistenceError as exc:
+    except (JobPersistenceError, JobError) as exc:
         # Nothing was persisted: the approved persistence rejection only,
-        # never a job_created for a record that does not exist.
+        # never a job_created for a record that does not exist.  ``JobError``
+        # (structural or duplicate rejection from the store) answers with the
+        # same closed envelope and the same reason code, so a caller cannot
+        # distinguish - and no unhandled 500 (which would be a non-JSON body
+        # and would emit no audit event at all) escapes this route.
         _emit_audit(
             request,
             event=EVENT_JOB_CREATE_REJECTED,

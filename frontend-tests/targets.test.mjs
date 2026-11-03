@@ -3,6 +3,7 @@ import { describe, it, beforeEach } from "node:test";
 
 import { showRoute } from "../frontend/js/app.js";
 import "../frontend/js/views/targets.js";
+import "../frontend/js/views/jobs.js";
 import { FakeResponse, containing, flush, setup } from "./_fixtures.mjs";
 
 let env;
@@ -217,5 +218,53 @@ describe("targets - rendering", () => {
     showRoute("#/targets");
     await flush();
     assert.match(root().textContent, /no engine is executed/i);
+  });
+});
+
+describe("targets - late response after navigation", () => {
+  it("a catalog response that lands after leaving the screen cannot repaint it", async () => {
+    start(USABLE, {
+      "GET /api/target-instances": { status: 200, body: { instances: [], count: 0 } },
+      "GET /api/jobs": { status: 200, body: { jobs: [], count: 0 } },
+    });
+
+    // Freeze only the targets screen's own request; every later catalog
+    // fetch (the jobs screen loads one for its target picker) passes
+    // straight through to the fixture.
+    let release;
+    const late = new Promise((resolve) => {
+      release = () => resolve(new FakeResponse(200, USABLE));
+    });
+    const fixtureFetch = env.fetch;
+    let frozen = true;
+    globalThis.fetch = (url, opts) => {
+      if (frozen && String(url).startsWith("/api/targets")) {
+        frozen = false;
+        return late;
+      }
+      return fixtureFetch(url, opts);
+    };
+
+    showRoute("#/targets");
+    await flush(2);
+    assert.match(root().textContent, /Loading target catalog/);
+    const slot = root().querySelectorAll(".targets__slot")[0];
+    assert.ok(slot, "the targets view renders into its owned slot");
+
+    // Navigate away while the request is still in flight.
+    showRoute("#/jobs");
+    await flush();
+    assert.equal(slot.parentNode, null, "navigation detaches the owned slot");
+    const settled = root().textContent;
+    assert.match(settled, /Create a simulated job/);
+
+    // The frozen response now lands - on the detached slot, not on the screen.
+    release();
+    await flush();
+
+    assert.equal(root().textContent, settled, "the jobs screen must be untouched");
+    assert.match(root().textContent, /Create a simulated job/);
+    assert.doesNotMatch(root().textContent, /target type\(s\)/, "catalog hint leaked into the jobs screen");
+    assert.equal(slot.parentNode, null, "the late response stayed on the detached slot");
   });
 });

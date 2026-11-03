@@ -84,6 +84,13 @@ export function RetryButton(onClick, label) {
   });
 }
 
+/**
+ * The fixed sentence shown when an operation fails for a reason the view
+ * cannot classify. Deliberately never derived from the thrown value: an
+ * exception message can carry internal detail and must not reach the DOM.
+ */
+export const SAFE_FAILURE_MESSAGE = "The operation did not complete. Nothing was changed. Please try again.";
+
 /** Inline error text used inside a section that still rendered other content. */
 export function InlineError(error) {
   const err =

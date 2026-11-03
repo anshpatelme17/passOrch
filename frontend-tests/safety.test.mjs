@@ -11,7 +11,7 @@ import "../frontend/js/views/targets.js";
 import "../frontend/js/views/instances.js";
 import "../frontend/js/views/plan.js";
 import "../frontend/js/views/jobs.js";
-import { flush, setup } from "./_fixtures.mjs";
+import { byTag, flush, setup } from "./_fixtures.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // frontend-tests -> repo root
@@ -28,6 +28,7 @@ const MODULES = [
   "app.js",
   "main.js",
   "views/dashboard.js",
+  "views/engines.js",
   "views/targets.js",
   "views/instances.js",
   "views/plan.js",
@@ -203,6 +204,68 @@ describe("safety - no fabricated engine behavior", () => {
     await flush();
     const text = globalThis.document.getElementById("view-root").textContent;
     assert.match(text, /Simulation only/);
+  });
+});
+
+describe("safety - hostile data stays inert text", () => {
+  // Payloads a hostile server or record might carry. The DOM helpers must
+  // render them as literal text: no element is ever created from data, and
+  // nothing executes.
+  const HOSTILE_TARGET = `<img src=x onerror="globalThis.__pwned=1">`;
+  const HOSTILE_ERROR = `</p><img src=x onerror="globalThis.__pwned=2">`;
+
+  function shell() {
+    return {
+      "GET /health": { status: 200, body: { status: "ok", mode: "simulated" } },
+      "GET /api/targets": { status: 200, body: { targets: [], count: 0 } },
+      "GET /api/target-instances": { status: 200, body: { instances: [], count: 0 } },
+    };
+  }
+
+  it("the jobs list renders a hostile target as text, never as markup", async () => {
+    setup({
+      ...shell(),
+      "GET /api/jobs": {
+        status: 200,
+        body: {
+          jobs: [
+            {
+              job_id: "11111111-1111-4111-8111-111111111111",
+              status: "denied",
+              created_at: 1700000001,
+              target: HOSTILE_TARGET,
+            },
+          ],
+          count: 1,
+        },
+      },
+    });
+    showRoute("#/jobs");
+    await flush();
+
+    const root = globalThis.document.getElementById("view-root");
+    assert.equal(byTag(root, "img").length, 0, "hostile target became an <img>");
+    assert.equal(byTag(root, "script").length, 0, "hostile target became a <script>");
+    assert.ok(root.textContent.includes(HOSTILE_TARGET), "payload must appear verbatim as text");
+    assert.equal(globalThis.__pwned, undefined, "payload must not execute");
+  });
+
+  it("a hostile server error message is rendered as text, never as markup", async () => {
+    setup({
+      ...shell(),
+      "GET /api/jobs": {
+        status: 401,
+        body: { detail: { error: "unauthorized", detail: HOSTILE_ERROR } },
+      },
+    });
+    showRoute("#/jobs");
+    await flush();
+
+    const root = globalThis.document.getElementById("view-root");
+    assert.equal(byTag(root, "img").length, 0, "error detail became an <img>");
+    assert.equal(byTag(root, "script").length, 0, "error detail became a <script>");
+    assert.ok(root.textContent.includes(HOSTILE_ERROR), "error detail must appear verbatim as text");
+    assert.equal(globalThis.__pwned, undefined, "error detail must not execute");
   });
 });
 

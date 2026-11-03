@@ -51,14 +51,17 @@ class PlanPreviewRequest(_Strict):
 
     ``mode`` is a free string so an unsupported value (for example ``"real"``)
     reaches the execution policy and is answered with a structured denial
-    rather than a transport-level error.
+    rather than a transport-level error.  It is capped at 64 characters: the
+    value is echoed into the denial detail and persisted with the record, so
+    the bound keeps an absurd payload from flowing unbounded through either
+    path while every legitimate mode value stays far below it.
 
     ``reference`` is capped at 256 characters, matching the frontend inputs
     that mirror it; the bound keeps the stored label from becoming an
     unbounded string on an otherwise fully-validated surface.
     """
 
-    mode: str = "simulated"
+    mode: str = Field(default="simulated", max_length=64)
     reference: str = Field(default="", max_length=256)
 
 
@@ -78,7 +81,10 @@ class JobCreateRequest(_Strict):
     ``mode`` stays a free string for the same reason as
     :class:`PlanPreviewRequest`: an unsupported value (for example ``"real"``)
     must reach :class:`~app.engines.execution_policy.ExecutionPolicy` and be
-    answered with a structured denial, not a transport error.
+    answered with a structured denial, not a transport error.  It carries the
+    same 64-character cap, so a denial record can never persist an unbounded
+    caller string (the bound is validation, not policy: values over the cap
+    are a structured 422 before any record exists).
 
     ``reference`` is capped at 256 characters, matching the frontend input
     that mirrors it.
@@ -86,7 +92,7 @@ class JobCreateRequest(_Strict):
 
     target: str
     instance_id: str | None = None
-    mode: str = "simulated"
+    mode: str = Field(default="simulated", max_length=64)
     reference: str = Field(default="", max_length=256)
 
 

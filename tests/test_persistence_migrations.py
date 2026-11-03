@@ -198,6 +198,49 @@ def test_future_schema_version_is_rejected_fail_closed(tmp_path: Path) -> None:
     assert row is not None
 
 
+def test_versioned_file_missing_a_table_fails_closed(tmp_path: Path) -> None:
+    """A table dropped from a stamped file is rejected at construction.
+
+    The version stamp says the schema is current, so migrations do not run
+    and the missing table would otherwise surface later as a store-specific
+    read failure. Construction must fail closed with the caller's generic
+    message instead - no table names, no SQL, no path.
+    """
+
+    db = tmp_path / "dropped.db"
+    PersistentJobStore(db)
+    assert _user_version(db) == SCHEMA_VERSION
+
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute(f"DROP TABLE {_INSTANCE_TABLE}")
+        connection.commit()
+    finally:
+        connection.close()
+    # The stamp still claims a complete schema.
+    assert _user_version(db) == SCHEMA_VERSION
+    assert _INSTANCE_TABLE not in _table_names(db)
+
+    with pytest.raises(JobPersistenceError) as job_error:
+        PersistentJobStore(db)
+    with pytest.raises(InstancePersistenceError) as instance_error:
+        PersistentTargetInstanceStore(db)
+
+    message = str(job_error.value)
+    assert message == "failed to initialize job database"
+    assert _INSTANCE_TABLE not in message
+    assert "sqlite_master" not in message
+    assert "DROP" not in message.upper()
+    assert str(tmp_path) not in message
+    assert str(instance_error.value) == "failed to initialize instance database"
+    assert str(tmp_path) not in str(instance_error.value)
+
+    # Fail closed without repairing or altering the damaged file.
+    assert _user_version(db) == SCHEMA_VERSION
+    assert _JOB_TABLE in _table_names(db)
+    assert _INSTANCE_TABLE not in _table_names(db)
+
+
 def test_failed_migration_rolls_back_and_leaves_database_intact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

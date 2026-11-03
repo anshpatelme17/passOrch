@@ -41,6 +41,7 @@ import {
   NavLink,
   Panel,
   RetryButton,
+  SAFE_FAILURE_MESSAGE,
   SimulationNotice,
 } from "../components.js";
 import { badge, button, empty, h, pending, render, table, text } from "../dom.js";
@@ -524,6 +525,11 @@ async function submitForm() {
     formState = { name: "", target_type: "", description: "" };
     renderForm();
     renderList();
+  } catch {
+    // Rejections only: an HTTP failure is handled above. Fixed sentence, no
+    // exception text, and the form is restored so the entered values survive.
+    renderFeedback("error", SAFE_FAILURE_MESSAGE);
+    renderForm();
   } finally {
     submittingInstance = false;
   }
@@ -602,6 +608,15 @@ async function processDelete(instanceId, label) {
     renderFeedback("success", `Deleted target instance "${label}".`);
     // Refresh only after a successful delete.
     renderList();
+  } catch {
+    // Rejections only: an HTTP failure is handled above. Fixed sentence, no
+    // exception text, and the list is refreshed so the screen is not left on
+    // a stale "Deleting..." state.
+    render(slot, [
+      InlineError({ kind: "error", message: SAFE_FAILURE_MESSAGE }),
+      RetryButton(renderList),
+      h("p", { class: "panel__hint", text: "The target instance was not deleted." }),
+    ]);
   } finally {
     deletingInstanceId = "";
   }
@@ -751,6 +766,10 @@ async function processUpdate(instance, label, state, rerender) {
     renderFeedback("success", `Updated target instance "${updatedName}".`);
     // Refresh only after a successful update.
     renderList();
+  } catch {
+    // Rejections only: an HTTP failure is handled above. Fixed sentence, no
+    // exception text; the edit form is reopened so the values are not lost.
+    rerender(SAFE_FAILURE_MESSAGE);
   } finally {
     updatingInstanceId = "";
   }
@@ -759,6 +778,14 @@ async function processUpdate(instance, label, state, rerender) {
 /* ---- view ----------------------------------------------------------------- */
 
 async function renderInstances(root) {
+  // Reset the in-flight guards on entry: a request still pending from a
+  // previous visit has detached the old slots, so its `finally` can no longer
+  // be observed here. Leaving a guard latched would silently disable this
+  // screen's forms for the rest of the session.
+  submittingInstance = false;
+  deletingInstanceId = "";
+  updatingInstanceId = "";
+
   listSlot = h("div", { class: "section-body" });
   formSlot = h("div", { class: "section-body" });
   feedbackSlot = h("div", { class: "section-body" });

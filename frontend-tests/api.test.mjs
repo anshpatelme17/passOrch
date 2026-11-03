@@ -129,6 +129,77 @@ describe("api.js - transport failures", () => {
   });
 });
 
+describe("api.js - default deadline", () => {
+  it("passes a deadline signal when the caller supplies none", async () => {
+    let seen;
+    globalThis.fetch = async (_u, opts) => {
+      seen = opts;
+      return new FakeResponse(200, {});
+    };
+    await api.get("/api/jobs");
+    assert.ok(seen.signal instanceof AbortSignal, "no signal means no deadline");
+  });
+
+  it("lets the caller's signal win over the default deadline", async () => {
+    const controller = new AbortController();
+    let seen;
+    globalThis.fetch = async (_u, opts) => {
+      seen = opts;
+      return new FakeResponse(200, {});
+    };
+    await request("/api/jobs", { signal: controller.signal });
+    assert.equal(seen.signal, controller.signal);
+  });
+
+  it("reports a deadline miss with a fixed sentence", async () => {
+    globalThis.fetch = async () => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "TimeoutError";
+      throw err;
+    };
+    const res = await api.get("/api/jobs");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 0);
+    assert.equal(res.error.kind, "transport");
+    assert.equal(res.error.message, "The request timed out. Please try again.");
+    assert.doesNotMatch(res.error.message, /operation was aborted/i);
+  });
+});
+
+describe("api.js - unreadable response body", () => {
+  it("resolves with a fixed message instead of rejecting", async () => {
+    globalThis.fetch = async () => ({
+      status: 200,
+      ok: true,
+      async text() {
+        throw new Error("socket hang up at byte 12");
+      },
+    });
+    let res;
+    await assert.doesNotReject(async () => {
+      res = await api.get("/api/jobs");
+    }, "request() must never reject");
+    assert.equal(res.ok, false);
+    assert.equal(res.error.kind, "transport");
+    assert.equal(res.error.message, "The response could not be read. Please try again.");
+    assert.doesNotMatch(res.error.message, /socket hang up/);
+  });
+
+  it("keeps the status when an error body cannot be read", async () => {
+    globalThis.fetch = async () => ({
+      status: 503,
+      ok: false,
+      async text() {
+        throw new Error("connection reset");
+      },
+    });
+    const res = await api.get("/api/jobs");
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 503);
+    assert.equal(res.error.message, "The response could not be read. Please try again.");
+  });
+});
+
 describe("api.js - first-party path guard", () => {
   it("refuses an absolute origin without calling fetch", async () => {
     let called = false;

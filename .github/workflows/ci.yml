@@ -5,10 +5,13 @@
 #     real token, database, engine, or external service required)
 #   * Ruff (F/E9, line length 100 - see pyproject.toml)
 #   * mypy (app/api + app/engines; see pyproject.toml [tool.mypy])
-#   * git diff --check (whitespace)
-# * Frontend harness via its verified pytest invocation (the harness is
+#   * git diff --check over the full committed tree (whitespace)
+#   * Frontend harness via its verified pytest invocation (the harness is
 #     a pytest module - running it as a plain script cannot import the
 #     ``tests`` package)
+#   * Docker image build + container smoke test (the production image
+#     must build from the runtime lock, start, and answer readiness in
+#     simulated mode)
 #
 # Supply-chain integrity (Step 11F / Phase 12):
 #   * Actions are pinned to full commit SHAs (annotated with the major
@@ -67,7 +70,12 @@ jobs:
         run: python -m mypy app/api app/engines
 
       - name: Whitespace check
-        run: git diff --check
+        # Check the committed tree, not the checkout: with no range,
+        # `git diff --check` diffs worktree vs index and can never fail on a
+        # clean checkout.  An empty tree -> HEAD range treats every committed
+        # line as an addition, so trailing whitespace or space-before-tab
+        # anywhere in the repository fails the gate.
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 
       - name: Frontend harness
         run: python -m pytest tests/test_frontend_js_execution.py
@@ -107,3 +115,35 @@ jobs:
 
       - name: mypy
         run: python -m mypy app/api app/engines
+
+  docker:
+    # The production image must actually build and run: the runtime-only
+    # hash-verified lock installs, the hardened container starts non-root,
+    # and readiness answers in simulated mode.  This catches Dockerfile /
+    # lock drift that the static artifact tests cannot.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build image
+        run: docker build --tag passorch:ci .
+
+      - name: Run container and smoke-test readiness
+        run: |
+          docker run -d --name passorch-smoke -p 127.0.0.1:8123:8000 passorch:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8123/health/ready >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8123/health/ready
+          curl -fsS http://127.0.0.1:8123/health | grep -q '"mode":"simulated"'
+          docker logs passorch-smoke
+
+      - name: Remove container
+        if: always()
+        run: docker rm -f passorch-smoke || true

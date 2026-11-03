@@ -28,6 +28,19 @@ services:
     env_file:
       - path: .env
         required: false
+    # Survive host reboots and transient crashes; Compose's `restart`
+    # policy also means a crashed container does not sit dead until an
+    # operator notices.
+    restart: unless-stopped
+    # Resource ceilings so one runaway container cannot exhaust the host.
+    # The app is a small single-process API; 512 MiB / 1.0 CPU is a
+    # generous ceiling, not a tuning target (exceeding it fails visibly
+    # rather than silently degrading the host).
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
     volumes:
       - passorch-data:/data
     # Runtime hardening: the image already runs as a non-root user with

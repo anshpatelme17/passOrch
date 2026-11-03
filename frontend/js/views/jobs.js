@@ -47,6 +47,7 @@ import {
   NavLink,
   Panel,
   RetryButton,
+  SAFE_FAILURE_MESSAGE,
   StatusBadge,
   SimulatedOnlyBadge,
   SimulationNotice,
@@ -452,6 +453,14 @@ async function submitJob() {
     // Refresh the list, then re-open the new job's detail so it is not lost.
     await renderList();
     await renderDetail(job.job_id);
+  } catch {
+    // A rejection here (never an HTTP error - those are handled above) must
+    // not escape as an unhandled rejection, and its message must never reach
+    // the DOM: only a fixed, safe sentence is shown.
+    render(formResultSlot, [
+      InlineError({ kind: "error", message: SAFE_FAILURE_MESSAGE }),
+      RetryButton(submitJob, "Retry creating job"),
+    ]);
   } finally {
     submittingJob = false;
   }
@@ -690,6 +699,14 @@ async function processExport(jobId) {
         text: "Export downloaded as a JSON file. The page itself was not changed.",
       }),
     ]);
+  } catch {
+    // A rejection outside the HTTP path (never an HTTP error - those are
+    // handled above) must not escape unhandled, and its message must never
+    // reach the DOM: only a fixed, safe sentence is shown.
+    render(slot, [
+      InlineError({ kind: "error", message: SAFE_FAILURE_MESSAGE }),
+      h("p", { class: "panel__hint", text: "The export was not generated." }),
+    ]);
   } finally {
     exportingJobId = "";
   }
@@ -754,6 +771,15 @@ async function processDeleteJob(jobId, label) {
     if (detailSelectedJobId === jobId) {
       renderDetail("");
     }
+  } catch {
+    // Rejections only: an HTTP failure is handled above. Fixed sentence, no
+    // exception text, and the list is refreshed so the screen is not left
+    // showing a stale "Deleting..." state.
+    render(slot, [
+      InlineError({ kind: "error", message: SAFE_FAILURE_MESSAGE }),
+      RetryButton(renderList),
+      h("p", { class: "panel__hint", text: "The job was not deleted." }),
+    ]);
   } finally {
     deletingJobId = "";
   }
@@ -762,6 +788,14 @@ async function processDeleteJob(jobId, label) {
 /* ---- view ----------------------------------------------------------------- */
 
 async function renderJobs(root) {
+  // Reset the in-flight guards on entry: a request that was pending when the
+  // user navigated away has detached the old slots, so its `finally` can no
+  // longer be observed here. Leaving a guard latched would silently disable
+  // this screen's forms for the rest of the session.
+  submittingJob = false;
+  exportingJobId = "";
+  deletingJobId = "";
+
   listSlot = h("div", { class: "section-body" });
   formSlot = h("div", { class: "section-body" });
   formResultSlot = h("div", { class: "section-body" });

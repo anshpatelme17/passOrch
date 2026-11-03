@@ -40,6 +40,7 @@ no subprocess, no shell.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -115,6 +116,19 @@ _MIGRATIONS: tuple[_Migration, ...] = (
 
 #: The schema version a current store reads and writes.
 SCHEMA_VERSION = _MIGRATIONS[-1].target
+
+#: Tables the migrations are expected to leave behind, derived from the
+#: ``CREATE TABLE`` statements themselves so a new migration's table can
+#: never be forgotten here.  Derived, never hand-listed: the DDL above is
+#: the single source of truth for what this file must contain.
+_REQUIRED_TABLES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        match.group(1)
+        for _, statements in _MIGRATIONS
+        for statement in statements
+        if (match := re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", statement, re.IGNORECASE))
+    )
+)
 
 
 class PersistenceError(Exception):
@@ -300,6 +314,23 @@ class PersistenceDatabase:
             for target, statements in _MIGRATIONS:
                 if target > version:
                     self._run_migration(connection, target, statements, failure)
+            # Every table the migrations imply must actually exist before this
+            # file is handed to a store. A file stamped with the current
+            # version but missing a table (a manual DROP, a half-restored
+            # backup) would otherwise fail later on its first read with a
+            # store-specific message; fail closed here instead, with the same
+            # generic message and no table names or SQL.
+            try:
+                present = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+            except sqlite3.Error as exc:
+                raise self._error_type(failure) from exc
+            if any(name not in present for name in _REQUIRED_TABLES):
+                raise self._error_type(failure)
         finally:
             connection.close()
 

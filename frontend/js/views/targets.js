@@ -77,17 +77,46 @@ function enabledCell(target) {
 
 /* ---- view ----------------------------------------------------------------- */
 
-async function renderTargets(root) {
-  render(root, [pending("Loading target catalog...")]);
+/** Fixed sentence for a failure this view's own error state could not show. */
+const LOAD_FAILED_MESSAGE = "The target catalog could not be loaded.";
+
+/**
+ * Attach this screen's owned slot to `root`.
+ *
+ * Every branch below paints into the slot, never into `root`: navigation
+ * clears `root`, which detaches the slot, so a response that arrives after
+ * the user has moved on lands on a detached node instead of overwriting the
+ * screen they are now looking at.
+ */
+function attachSlot(root) {
+  const slot = h("div", { class: "targets__slot" });
+  render(root, [slot]);
+  return slot;
+}
+
+/** Paint the fixed failure state into `slot` - never carries exception text. */
+function paintFailure(slot) {
+  render(slot, [SimulationNotice(), InlineError({ kind: "error", message: LOAD_FAILED_MESSAGE })]);
+}
+
+/** Load the catalog into a fresh owned slot. Never rejects: a failure of the
+ *  request *or* of the error state itself is painted into that same slot. */
+function start(root) {
+  const slot = attachSlot(root);
+  fillSlot(slot, root).catch(() => paintFailure(slot));
+}
+
+async function fillSlot(slot, root) {
+  render(slot, [pending("Loading target catalog...")]);
 
   const res = await api.get("/api/targets");
   if (!res.ok) {
-    render(root, [
+    render(slot, [
       SimulationNotice(),
       Panel("Targets", [
         h("div", { class: "section-body" }),
         InlineError(res.error),
-        RetryButton(() => renderTargets(root), "Retry loading targets"),
+        RetryButton(() => start(root), "Retry loading targets"),
       ]),
     ]);
     return;
@@ -96,7 +125,7 @@ async function renderTargets(root) {
   const targets = asArray(res.data && res.data.targets);
 
   if (targets.length === 0) {
-    render(root, [
+    render(slot, [
       SimulationNotice(),
       Panel(
         "Targets",
@@ -120,7 +149,7 @@ async function renderTargets(root) {
   );
   const usableCount = valid.filter((t) => t.usable === true).length;
 
-  render(root, [
+  render(slot, [
     SimulationNotice(),
     Panel(
       "Targets",
@@ -154,10 +183,10 @@ async function renderTargets(root) {
 
 export const TargetsView = registerView("/targets", {
   title: "Targets",
+  // `start` owns the slot and never rejects: a failed request *and* a failed
+  // error state both land in that slot, which navigation has detached.
   render: (root) => {
-    renderTargets(root).catch((err) => {
-      render(root, [SimulationNotice(), InlineError(err)]);
-    });
+    start(root);
   },
 });
 

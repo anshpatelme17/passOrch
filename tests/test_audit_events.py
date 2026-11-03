@@ -79,7 +79,7 @@ from app.engines.execution_policy import (
     REASON_UNSUPPORTED_MODE,
 )
 from app.engines.job_persistence import JobPersistenceError
-from app.engines.jobs import JobStatus, JobStore
+from app.engines.jobs import InvalidJobError, JobStatus, JobStore
 from app.engines.target_instances import TargetInstanceStore
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -932,6 +932,19 @@ class _FailingPutJobStore(JobStore):
         raise JobPersistenceError("simulated persistence failure")
 
 
+class _JobErrorPutJobStore(JobStore):
+    """A store whose write rejects the record with a ``JobError``.
+
+    Structural / duplicate rejections are *not* ``JobPersistenceError``
+    subclasses, so before R5 they escaped ``POST /api/jobs`` as an unhandled
+    500: a non-JSON body and no audit event at all.  The message is seeded
+    with a marker to prove it never reaches the event or the response.
+    """
+
+    def put(self, job):
+        raise InvalidJobError("job serialises forbidden fields: SECRET-JOB-ERROR")
+
+
 # --------------------------------------------------------------------------- #
 # M3.2 - exactly one event per job-create outcome (injected capturing sink)
 # --------------------------------------------------------------------------- #
@@ -1123,6 +1136,44 @@ def test_persistence_failure_emits_one_rejection_and_no_job_created() -> None:
     assert "job_id" not in payload
     # the store's exception text never reaches the event
     assert "simulated persistence failure" not in lines[0]
+    assert not any(
+        json.loads(line)["event"] == "job_created" for line in lines
+    ), "no job_created may be emitted for a record that does not exist"
+
+
+def test_job_error_rejection_uses_the_same_envelope_and_reason() -> None:
+    """A structural ``JobError`` from the store: 503 + one rejection event.
+
+    ``InvalidJobError`` / ``DuplicateJobError`` are not ``JobPersistenceError``
+    subclasses.  They must answer with the identical closed envelope and the
+    identical approved reason code, emit exactly one ``job_create_rejected``
+    (never a ``job_created``), and never surface the exception text.
+    """
+
+    lines: list[str] = []
+    store = _JobErrorPutJobStore()
+    client = _audit_client(lines, job_store=store)
+
+    res = client.post("/api/jobs", json={"target": "pdf-document"})
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+    assert len(store) == 0  # nothing was persisted
+
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["event"] == "job_create_rejected"
+    assert payload["reason"] == "persistence_unavailable"
+    assert payload["reason"] in JOB_REASON_VALUES
+    assert "job_id" not in payload
+    # the store's exception text never reaches the event or the body
+    assert "SECRET-JOB-ERROR" not in lines[0]
+    assert "SECRET-JOB-ERROR" not in res.text
+    assert "Traceback" not in res.text
     assert not any(
         json.loads(line)["event"] == "job_created" for line in lines
     ), "no job_created may be emitted for a record that does not exist"

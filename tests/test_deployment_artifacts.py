@@ -203,6 +203,159 @@ def test_requirements_lock_pins_every_dependency_with_hashes() -> None:
         assert required in pinned, required
 
 
+def test_constraints_txt_mirrors_the_verified_lock_exactly() -> None:
+    """``constraints.txt`` is the human-readable copy of the same closure
+    (L-13): identical package sets and identical pins, so the reference file
+    can never silently drop a package the lock still carries."""
+
+    lock_pins: dict[str, str] = {}
+    lines = Path("requirements.lock").read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(lines):
+        match = _REQLINE.match(lines[i])
+        assert match is not None, f"unexpected lock line {i + 1}: {lines[i]!r}"
+        lock_pins[match.group(1).lower().replace("_", "-")] = match.group(2)
+        i += 1
+        while i < len(lines) and lines[i].startswith("    --hash="):
+            i += 1
+
+    constraint_pins: dict[str, str] = {}
+    for raw in Path("constraints.txt").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, version = line.partition("==")
+        assert sep == "==", f"unpinned constraints line: {raw!r}"
+        constraint_pins[name.lower().replace("_", "-")] = version
+
+    assert constraint_pins == lock_pins
+
+
+# --------------------------------------------------------------------------- #
+# runtime-only image lock (M-7): requirements.runtime.lock
+# --------------------------------------------------------------------------- #
+
+_RUNTIME_LOCK = Path("requirements.runtime.lock")
+
+
+def _parse_pin_blocks(path: Path) -> dict[str, tuple[str, list[str]]]:
+    """``{canonical name: (version, [hash lines])}`` from a lock file.
+
+    Skips ``#`` comment lines (the runtime lock carries a header); every
+    other line must be a pin or an indented hash, so a malformed file fails
+    loudly instead of being half-parsed.
+    """
+
+    pins: dict[str, tuple[str, list[str]]] = {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        match = _REQLINE.match(line)
+        assert match is not None, f"{path}: line {i + 1} is not a pin: {line!r}"
+        name = match.group(1).lower().replace("_", "-")
+        assert name not in pins, f"{path}: duplicate pin for {name}"
+        hashes: list[str] = []
+        i += 1
+        while i < len(lines) and lines[i].startswith("    --hash="):
+            hashes.append(lines[i].strip())
+            i += 1
+        pins[name] = (match.group(2), hashes)
+    return pins
+
+
+def test_runtime_lock_is_an_exact_hash_verified_subset_of_the_full_lock() -> None:
+    """Every runtime-lock entry is byte-identical to the full lock: same
+    pin, same PyPI digests - the subset can never invent or drift a version."""
+
+    full = _parse_pin_blocks(Path("requirements.lock"))
+    runtime = _parse_pin_blocks(_RUNTIME_LOCK)
+    assert runtime, "requirements.runtime.lock must not be empty"
+    for name, (version, hashes) in runtime.items():
+        assert name in full, f"{name} is not in requirements.lock"
+        full_version, full_hashes = full[name]
+        assert version == full_version, f"{name}: {version} != {full_version}"
+        assert hashes, f"{name} carries no hashes"
+        assert set(hashes) <= set(full_hashes), f"{name}: hashes not from the lock"
+
+
+def test_runtime_lock_excludes_test_and_typing_tooling() -> None:
+    """The production image must not ship pytest, ruff, mypy or their
+    helpers (M-7)."""
+
+    runtime = _parse_pin_blocks(_RUNTIME_LOCK)
+    for tool in (
+        "pytest",
+        "ruff",
+        "mypy",
+        "mypy-extensions",
+        "httpx",
+        "httpcore",
+        "pygments",
+        "iniconfig",
+        "pluggy",
+        "pathspec",
+        "librt",
+        "ast-serialize",
+        "packaging",
+    ):
+        assert tool not in runtime, tool
+
+
+def test_runtime_lock_covers_the_runtime_dependency_closure() -> None:
+    """Walk the declared runtime dependencies through installed metadata:
+    every package the import graph needs must be pinned in the runtime lock,
+    so the image cannot fail at import time for want of a package."""
+
+    import tomllib
+    from importlib.metadata import distributions
+
+    from packaging.markers import default_environment
+    from packaging.requirements import Requirement
+
+    env = dict(default_environment())
+    env.setdefault("extra", "")
+
+    def canonical(name: str) -> str:
+        return name.lower().replace("_", "-").replace(".", "-")
+
+    installed: dict[str, object] = {}
+    for dist in distributions():
+        meta_name = dist.metadata.get("Name")
+        if meta_name:
+            installed[canonical(meta_name)] = dist
+
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    direct = [Requirement(spec).name for spec in project.get("dependencies", []) or []]
+    assert direct, "pyproject.toml must declare runtime dependencies"
+
+    runtime = _parse_pin_blocks(_RUNTIME_LOCK)
+    seen: set[str] = set()
+    stack = list(direct)
+    while stack:
+        name = canonical(stack.pop())
+        if name in seen:
+            continue
+        seen.add(name)
+        assert name in runtime, f"{name} missing from requirements.runtime.lock"
+        dist = installed.get(name)
+        assert dist is not None, f"{name} is not installed in this environment"
+        runtime_version, _ = runtime[name]
+        assert runtime_version == dist.version, f"{name}: lock {runtime_version} != installed {dist.version}"
+        for spec in dist.requires or []:
+            req = Requirement(spec)
+            if req.marker is not None:
+                try:
+                    if not req.marker.evaluate(env):
+                        continue
+                except Exception:
+                    pass  # conservative: treat as part of the closure
+            stack.append(req.name)
+
+
 def test_ci_actions_are_pinned_to_full_commit_shas() -> None:
     lines = _CI_WORKFLOW.read_text(encoding="utf-8").splitlines()
     uses = [line for line in lines if "uses:" in line]
@@ -219,7 +372,10 @@ def test_dockerfile_base_image_is_digest_pinned_and_uses_the_lock() -> None:
     text = _DOCKERFILE.read_text(encoding="utf-8")
     digest = _FROM_DIGEST.search(text)
     assert digest is not None, "FROM must pin python:3.13-slim by sha256 digest"
-    assert "--require-hashes" in text and "requirements.lock" in text
+    # The image installs the runtime-only lock: hash-verified, but without
+    # the test/lint/typing tooling the full lock carries (M-7).
+    assert "--require-hashes" in text and "requirements.runtime.lock" in text
+    assert "-r requirements.lock" not in text, "the image must not install the full lock"
     # The project install must not re-resolve dependencies.
     assert "--no-deps ." in text
     # The old constraint-file flow is fully replaced by the lock.

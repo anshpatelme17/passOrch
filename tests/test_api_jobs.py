@@ -36,7 +36,7 @@ from app.engines.discovery.models import (
 from app.engines.discovery.registry import FORBIDDEN_PAYLOAD_KEYS, DiscoveryRegistry
 from app.engines.discovery.service import CapabilityRefreshService
 from app.engines.job_persistence import PersistentJobStore
-from app.engines.jobs import AuditJob, JobStatus, JobStore, default_job_store
+from app.engines.jobs import AuditJob, DuplicateJobError, InvalidJobError, JobStatus, JobStore, default_job_store
 from app.engines.target_instances import TargetInstanceStore, default_target_instance_store
 
 JOBS_ROUTE_MODULE = Path("app/api/routes/jobs.py")
@@ -231,6 +231,27 @@ def test_post_jobs_denies_unsupported_mode() -> None:
     assert body["preview"]["simulation"] is None
     assert body["target"] == "pdf-document"
     assert not _forbidden_keys(body)
+
+
+def test_post_jobs_bounds_mode_length() -> None:
+    """``mode`` is capped at 64 characters (M-1): a denial record can never
+    persist an unbounded caller string, while every legitimate mode value -
+    including unsupported ones that must reach the policy - stays below the
+    cap and is still answered with a structured denial, not a transport error.
+    """
+
+    client = _client()
+
+    # At the cap: still a free string that reaches the policy and is denied.
+    at_cap = client.post("/api/jobs", json={"target": "pdf-document", "mode": "x" * 64})
+    assert at_cap.status_code == 200
+    assert at_cap.json()["status"] == "denied"
+
+    # Over the cap: transport-level validation, so nothing is persisted.
+    for payload_mode in ("x" * 65, "m" * 10_000):
+        res = client.post("/api/jobs", json={"target": "pdf-document", "mode": payload_mode})
+        assert res.status_code == 422
+        assert res.json()["detail"][0]["loc"] == ["body", "mode"]
 
 
 def test_post_jobs_denies_unverified_capability() -> None:
@@ -1748,6 +1769,50 @@ def test_api_jobs_fails_closed_for_wrongly_typed_store() -> None:
 
     assert poison.accessed == []
     assert len(default_job_store()) == 0
+
+
+class _JobErrorPutStore(JobStore):
+    """A store whose write rejects the record with a non-persistence ``JobError``.
+
+    ``InvalidJobError`` / ``DuplicateJobError`` do not subclass
+    ``JobPersistenceError``; before R5 they escaped ``POST /api/jobs`` as an
+    unhandled 500 (non-JSON body, no audit event).  The marker proves the
+    exception text never reaches the response.
+    """
+
+    def put(self, job):
+        raise InvalidJobError("job serialises forbidden fields: SECRET-JOB-ERROR")
+
+
+def test_api_jobs_job_error_answers_with_the_persistence_envelope() -> None:
+    client = _client(store=_JobErrorPutStore())
+
+    res = client.post("/api/jobs", json={"target": "pdf-document"})
+
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "job storage is temporarily unavailable",
+        }
+    }
+    assert "SECRET-JOB-ERROR" not in res.text
+    assert "InvalidJobError" not in res.text
+    assert "Traceback" not in res.text
+
+
+def test_api_jobs_duplicate_job_error_answers_with_the_same_envelope() -> None:
+    class _DuplicateStore(JobStore):
+        def put(self, job):
+            raise DuplicateJobError(job.job_id if hasattr(job, "job_id") else "x")
+
+    client = _client(store=_DuplicateStore())
+
+    res = client.post("/api/jobs", json={"target": "pdf-document"})
+
+    assert res.status_code == 503
+    assert res.json()["detail"]["error"] == "persistence_unavailable"
+    assert "DuplicateJobError" not in res.text
 
 
 def test_api_jobs_wrong_type_response_exposes_no_internal_details() -> None:
