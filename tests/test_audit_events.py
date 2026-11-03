@@ -1179,6 +1179,89 @@ def test_job_error_rejection_uses_the_same_envelope_and_reason() -> None:
     ), "no job_created may be emitted for a record that does not exist"
 
 
+def test_concurrent_http_job_creates_stay_whole_and_each_emit_one_event() -> None:
+    """20 parallel ``POST /api/jobs``: whole records, one event each, bounded.
+
+    The registry is built in-memory from synthetic snapshots - no binary is
+    located and no probe is run - so the job path never touches a subprocess,
+    and the autouse no-subprocess guard would fail this test if it did.
+    """
+
+    lines: list[str] = []
+    lock = threading.Lock()
+
+    def sink(line: str) -> None:
+        with lock:
+            lines.append(line)
+
+    # Bounded store: 20 creates land newest-first, only the newest 7 survive.
+    store = JobStore(capacity=7)
+    app = create_app(
+        audit=AuditLogger(sink=sink, clock=lambda: _CLOCK_TS),
+        discovery_registry=_john_registry(),
+        job_store=store,
+        target_instance_store=TargetInstanceStore(capacity=10),
+    )
+
+    def create(index: int):
+        client = TestClient(app)  # one client per thread
+        return client.post(
+            "/api/jobs",
+            json={"target": "pdf-document", "reference": f"conc-{index:02d}"},
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(create, range(20)))
+
+    # Every request passes the simulation-only policy and succeeds.
+    assert [res.status_code for res in responses] == [200] * 20
+
+    bodies = [res.json() for res in responses]
+    ids = [body["job_id"] for body in bodies]
+    assert len(set(ids)) == 20
+    assert all(body["status"] == "simulated" for body in bodies)
+    by_id = {body["job_id"]: body for body in bodies}
+
+    # Bounded store: exactly capacity records are retained, the rest evicted.
+    assert len(store) == 7
+    surviving = store.list()
+    assert len(surviving) == 7
+    surviving_ids = {job.job_id for job in surviving}
+    assert surviving_ids <= set(ids)
+    assert len(surviving_ids) == 7  # FIFO eviction left no duplicates
+
+    # Each surviving record agrees with what the API returned for that job.
+    for job in surviving:
+        body = by_id[job.job_id]
+        assert job.status is JobStatus.SIMULATED
+        assert job.target == "pdf-document" == body["target"]
+        assert isinstance(job.created_at, int)
+        # No instance association: both are the empty-string snapshot.
+        assert job.instance_id == ""
+        assert job.instance_target_type == ""
+        assert job.preview is not None
+        preview = body["preview"]
+        authorized = preview["authorization"]["authorized"]
+        assert authorized is True
+        assert job.preview.target == preview["target"] == "pdf-document"
+        assert job.preview.request.reference == preview["request"]["reference"]
+        assert job.preview.request.engine == preview["request"]["engine"]
+        assert job.preview.authorization.authorized is authorized
+
+    # Audit: exactly one job_created per persist, nothing rejected, and the
+    # emitted ids are exactly the response ids (order may vary, so compare
+    # sorted).
+    payloads = [json.loads(line) for line in lines]
+    created = [p for p in payloads if p["event"] == EVENT_JOB_CREATED]
+    rejected = [p for p in payloads if p["event"] == EVENT_JOB_CREATE_REJECTED]
+    assert rejected == []
+    assert len(created) == 20
+    assert sorted(p["job_id"] for p in created) == sorted(ids)
+    assert all(p["status"] == "simulated" for p in created)
+    assert all(p["target"] == "pdf-document" for p in created)
+    assert all(p["job_id"] in by_id for p in created)
+
+
 def test_miswired_stores_emit_the_persistence_unavailable_rejection() -> None:
     """Both store-resolution 503 paths carry the same approved rejection."""
 

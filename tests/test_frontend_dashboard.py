@@ -206,14 +206,17 @@ def test_each_section_has_its_own_slot() -> None:
 
 def test_each_section_renderer_exists_and_is_invoked_once() -> None:
     for section in (
-        "healthSection(",
-        "enginesSection(",
-        "jobsSection(",
-        "instancesSection(",
+        "healthSection",
+        "enginesSection",
+        "jobsSection",
+        "instancesSection",
     ):
-        definition = f"async function {section}"
+        definition = f"async function {section}("
         assert definition in DASHBOARD_CODE, definition
-        assert DASHBOARD_CODE.count(section) >= 2, section  # defined + invoked
+        # defined once + handed to runSection once (which starts it)
+        invocation = f"runSection({section}, "
+        assert DASHBOARD_CODE.count(invocation) >= 1, section
+        assert DASHBOARD_CODE.count(section) >= 2, section  # defined + referenced
 
 
 def test_every_section_renders_a_loading_state() -> None:
@@ -228,7 +231,8 @@ def test_retries_reinvoke_their_own_section() -> None:
     """A retry must re-run the section's own loader, not a sibling's."""
 
     for section in ("healthSection", "enginesSection", "jobsSection", "instancesSection"):
-        pattern = rf"RetryButton\(\(\) => {section}\("
+        # Retries go through runSection so a rejecting retry is caught too.
+        pattern = rf"RetryButton\(\(\) => runSection\({section}, slot\)"
         assert re.search(pattern, DASHBOARD_CODE), f"{section} has no self-retry"
 
 
@@ -377,7 +381,7 @@ def test_dashboard_statistics_has_loading_state() -> None:
 def test_dashboard_statistics_has_error_state() -> None:
     src = DASHBOARD_CODE
     assert "InlineError(res.error)" in src
-    assert "RetryButton(() => statisticsSection(slot))" in src
+    assert "RetryButton(() => runSection(statisticsSection, slot))" in src
 
 
 def test_dashboard_statistics_renders_counts() -> None:

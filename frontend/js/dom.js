@@ -120,10 +120,6 @@ export function button(label, onClick, className) {
   });
 }
 
-export function codeBlock(value) {
-  return h("code", { text: value });
-}
-
 /**
  * A definition-style key/value block. Values may be a string, number or Node;
  * strings are written as text so untrusted input can never become markup.

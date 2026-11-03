@@ -2,7 +2,7 @@
 
 Coverage for ``app/core/orchestrator/jobs.py`` (the compose layer between the
 unchanged ``preview_plan`` pipeline and the Phase 3B.1 data layer) plus the
-3B.2 schemas (``JobSummary`` / ``JobInfo`` / ``JobListResponse``):
+3B.2 schemas (``JobSummary`` / ``JobInfo`` / ``JobPageResponse``):
 
 * ``job_status_for`` - explicit terminal mapping (never ``PENDING``);
 * ``failure_reason_for`` - policy denial reason, internal failure, or ``""``;
@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.api.schemas import JobInfo, JobListResponse, JobSummary, PlanPreviewResponse
+from app.api.schemas import JobInfo, JobPageResponse, JobSummary, PlanPreviewResponse
 from app.core.orchestrator.jobs import create_job, failure_reason_for, job_status_for
 from app.core.orchestrator.plan import PlanPreview, preview_plan
 from app.engines.adapter import FORBIDDEN_REQUEST_FIELDS, ExecutionStatus
@@ -473,19 +473,31 @@ def test_job_info_rejects_unknown_fields() -> None:
         )
 
 
-def test_job_list_response_shape_and_defaults() -> None:
-    assert JobListResponse().jobs == []
-    assert JobListResponse().count == 0
-    response = JobListResponse(
+def test_job_page_response_shape_and_defaults() -> None:
+    response = JobPageResponse(
         jobs=[
             JobSummary(
                 job_id=_uuid(1), status="simulated", created_at=1, target="pdf"
             )
         ],
         count=1,
+        total=1,
+        limit=50,
+        offset=0,
     )
     assert response.count == 1
     assert response.jobs[0].job_id == _uuid(1)
+
+
+def test_job_page_response_defaults() -> None:
+    """The response the UI relies on for a bare, unparameterised page."""
+
+    page = JobPageResponse()
+    assert page.limit == 50
+    assert page.offset == 0
+    assert page.total == 0
+    assert page.count == 0
+    assert page.jobs == []
 
 
 def test_job_schema_serialisation_never_carries_command_fields() -> None:

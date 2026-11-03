@@ -41,28 +41,6 @@ export function toneFor(value) {
 
 /* ---- sections and links -------------------------------------------------- */
 
-/**
- * A titled panel whose body is either content or a state helper result.
- * `body` may be a Node, an array of Nodes, or falsy (rendered as an empty area).
- */
-export function Section(title, body, hint) {
-  const kids = [];
-  const head = h("div", { class: "panel__head" });
-  head.appendChild(h("h2", { class: "panel__title", text: title }));
-  if (hint) {
-    head.appendChild(h("p", { class: "panel__hint", text: hint }));
-  }
-  kids.push(head);
-
-  const bodies = Array.isArray(body) ? body : [body];
-  for (const child of bodies) {
-    if (child instanceof Node) {
-      kids.push(child);
-    }
-  }
-  return h("section", { class: "panel", children: kids });
-}
-
 /** An internal link that drives the existing hash router. */
 export function NavLink(label, path) {
   return h("a", {
@@ -119,10 +97,6 @@ export function SimulatedOnlyBadge() {
 export function BoolBadge(value, trueLabel, falseLabel) {
   const label = value ? trueLabel : falseLabel;
   return badge(label, value ? "ok" : "muted");
-}
-
-export function TextOrDash(value) {
-  return h("span", { text: value === undefined || value === null || value === "" ? "-" : value });
 }
 
 export function CodeOrDash(value) {

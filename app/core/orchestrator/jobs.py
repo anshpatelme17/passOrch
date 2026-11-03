@@ -111,7 +111,10 @@ def create_job(
         job_id=identifier,
         status=status,
         created_at=now(),
-        target=preview.target if preview is not None else "",
+        # ``preview_plan`` is typed ``-> PlanPreview`` and never returns None
+        # (the ``FAILED`` case is a preview with no simulation), so the target
+        # always comes from the preview itself.
+        target=preview.target,
         preview=None if status is JobStatus.FAILED else preview,
         failure_reason=reason,
         instance_id=instance_id,

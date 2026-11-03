@@ -425,6 +425,12 @@ select {
   gap: 10px;
 }
 
+/* The targets screen renders every branch into one owned slot, so a late
+   response lands on a detached node instead of the current screen. */
+.targets__slot {
+  display: contents;
+}
+
 /* ---- stat tiles ---------------------------------------------------------- */
 
 .stat-row {

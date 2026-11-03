@@ -227,7 +227,9 @@ def test_view_has_an_error_state_with_retry() -> None:
 
 
 def test_retry_reinvokes_the_same_loader() -> None:
-    assert re.search(r"RetryButton\(\(\) => renderTargets\(root\)", TARGETS_CODE)
+    # The retry restarts the view's own entry point, which attaches a fresh
+    # owned slot and re-runs the same loader.
+    assert re.search(r"RetryButton\(\(\) => start\(root\)", TARGETS_CODE)
 
 
 def test_view_preserves_the_simulation_only_notice_in_every_branch() -> None:
@@ -381,11 +383,14 @@ def test_entry_module_registers_both_implemented_views() -> None:
     assert "start()" in main
 
 
-def test_dashboard_view_is_unchanged_by_this_phase() -> None:
+def test_dashboard_view_wiring_matches_runSection() -> None:
     dash = _read(FRONTEND_DIR / "js" / "views" / "dashboard.js")
-    # unchanged conventions: four sections, four endpoints
-    assert dash.count("healthSection(") >= 2
-    assert dash.count("enginesSection(") >= 2
+    # Sections are started exclusively through runSection, so a rejecting
+    # section is caught instead of escaping as an unhandled rejection.
+    assert dash.count("async function healthSection(") >= 1
+    assert dash.count("runSection(healthSection, ") >= 1
+    assert dash.count("async function enginesSection(") >= 1
+    assert dash.count("runSection(enginesSection, ") >= 1
     assert "/health" in dash and "/api/engines" in dash
 
 

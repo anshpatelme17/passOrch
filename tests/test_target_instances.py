@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 
@@ -572,6 +573,110 @@ def test_api_deleting_one_instance_leaves_others_and_jobs_untouched():
     remaining = client.get("/api/target-instances").json()
     assert remaining["count"] == 1
     assert remaining["instances"][0]["id"] == second["id"]
+
+
+# ---------------------------------------------------------------------------
+# Concurrent HTTP mutations (single-worker deployment is documented; the
+# store's lock is what keeps parallel requests from interleaving state)
+# ---------------------------------------------------------------------------
+
+
+def test_api_concurrent_creates_never_interleave_or_lose_records():
+    """Parallel POSTs each land one whole record - never a mixed or partial one."""
+
+    store = TargetInstanceStore(capacity=64)
+    app = create_app(target_instance_store=store)
+    total = 24
+
+    def create(index: int) -> dict:
+        # One client per thread: TestClient is not documented as shareable.
+        client = TestClient(app)
+        response = client.post(
+            "/api/target-instances",
+            json={
+                "name": f"concurrent-{index:02d}",
+                "target_type": "pdf-document",
+                "description": f"description-{index:02d}",
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        created = list(pool.map(create, range(total)))
+
+    # Each response is a complete record: its own name with its own
+    # description and a fresh id - no field borrowed from a neighbour.
+    ids = [record["id"] for record in created]
+    assert len(set(ids)) == total
+    for index, record in enumerate(created):
+        assert record["name"] == f"concurrent-{index:02d}"
+        assert record["description"] == f"description-{index:02d}"
+        assert _UUID_RE.fullmatch(record["id"])
+        assert isinstance(record["created_at"], int)
+
+    # The stored list agrees with what the responses claimed.
+    listing = TestClient(app).get("/api/target-instances").json()
+    assert listing["count"] == total
+    by_name = {record["name"]: record for record in listing["instances"]}
+    assert set(by_name) == {f"concurrent-{index:02d}" for index in range(total)}
+    for index in range(total):
+        name = f"concurrent-{index:02d}"
+        assert by_name[name]["description"] == f"description-{index:02d}"
+        assert by_name[name]["target_type"] == "pdf-document"
+
+
+def test_api_concurrent_creates_and_deletes_leave_a_consistent_store():
+    """Deletes racing creates: survivors are exactly the records created."""
+
+    store = TargetInstanceStore(capacity=64)
+    app = create_app(target_instance_store=store)
+    setup_client = TestClient(app)
+    doomed = [
+        setup_client.post(
+            "/api/target-instances",
+            json={"name": f"doomed-{index:02d}", "target_type": "pdf-document"},
+        ).json()["id"]
+        for index in range(10)
+    ]
+    assert len(set(doomed)) == 10
+
+    def delete(index: int) -> int:
+        return TestClient(app).delete(f"/api/target-instances/{doomed[index]}").status_code
+
+    def create(index: int) -> dict:
+        response = TestClient(app).post(
+            "/api/target-instances",
+            json={
+                "name": f"kept-{index:02d}",
+                "target_type": "zip-archive",
+                "description": f"survivor-{index:02d}",
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        delete_futures = [pool.submit(delete, index) for index in range(10)]
+        create_futures = [pool.submit(create, index) for index in range(10)]
+        delete_statuses = [future.result() for future in delete_futures]
+        created = [future.result() for future in create_futures]
+
+    assert delete_statuses == [204] * 10
+
+    # Every survivor is whole and every doomed record is gone: no partial
+    # state where a delete half-applied or a create lost its fields.
+    listing = TestClient(app).get("/api/target-instances").json()
+    assert listing["count"] == 10
+    by_name = {record["name"]: record for record in listing["instances"]}
+    assert set(by_name) == {f"kept-{index:02d}" for index in range(10)}
+    for index, record in enumerate(created):
+        assert record["name"] == f"kept-{index:02d}"
+        assert record["description"] == f"survivor-{index:02d}"
+        assert record["target_type"] == "zip-archive"
+        assert by_name[record["name"]]["description"] == f"survivor-{index:02d}"
+    for instance_id in doomed:
+        assert TestClient(app).get(f"/api/target-instances/{instance_id}").status_code == 404
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,6 @@ __all__ = [
     "JobInfo",
     "JobCreateRequest",
     "JobExportEnvelope",
-    "JobListResponse",
     "JobPageResponse",
     "JobSummary",
     "PlanInfo",
@@ -269,11 +268,6 @@ class JobInfo(_Strict):
     preview: PlanPreviewResponse | None = None
     instance_id: str = ""
     instance_target_type: str = ""
-
-
-class JobListResponse(_Strict):
-    jobs: list[JobSummary] = []
-    count: int = 0
 
 
 class JobPageResponse(_Strict):
