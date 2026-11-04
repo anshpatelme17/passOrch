@@ -1,6 +1,6 @@
 """Phase 4B.4 - Plan-preview view contract tests.
 
-Static and structural assertions on ``frontend/js/views/plan.js`` plus its
+Static and structural assertions on ``app/frontend/js/views/plan.js`` plus its
 integration with the shared ``PlanPreviewView`` component and the existing shell.
 
 No JavaScript runtime is available in this repository (Node is absent; the Python
@@ -78,7 +78,7 @@ def client() -> TestClient:
 
 def test_plan_view_uses_only_the_plan_and_catalog_endpoints() -> None:
     calls = set(re.findall(r'api\.(?:get|post)\(\s*"([^"]+)"', PLAN_RAW))
-    calls |= set(re.findall(r"api\.(?:get|post)\(`([^`]+)`", PLAN_RAW))
+    calls |= set(re.findall(r"api\.(?:get|post)\(\s*`([^`]+)`", PLAN_RAW))
     assert calls, "the view must call the API"
     normalised = {re.sub(r"\$\{[^}]*\}", "{target_id}", p) for p in calls}
     assert normalised == set(ALLOWED), normalised
@@ -89,7 +89,7 @@ def test_plan_issues_get_and_post() -> None:
 
 
 def test_plan_path_is_built_from_the_submitted_target() -> None:
-    assert "/api/targets/${target}/compatibility/plan" in PLAN_CODE
+    assert "/api/targets/${encodePathSegment(target)}/compatibility/plan" in PLAN_CODE
 
 
 def test_plan_never_calls_fetch_directly() -> None:
@@ -130,7 +130,7 @@ def test_target_is_sent_as_the_path_not_the_body() -> None:
     """The route path carries the target; the body must not duplicate it."""
 
     assert "target: formState.target" not in PLAN_CODE
-    assert "/api/targets/${target}/compatibility/plan" in PLAN_CODE
+    assert "/api/targets/${encodePathSegment(target)}/compatibility/plan" in PLAN_CODE
 
 
 def test_only_the_simulation_mode_is_offered() -> None:
@@ -143,8 +143,12 @@ def test_reference_input_length_is_bounded() -> None:
 
 def test_submit_is_guarded_when_no_target_is_chosen() -> None:
     code = PLAN_CODE
-    assert 'if (!isNonEmptyString(target))' in code
-    assert "submit.setAttribute(\"disabled\", \"\")" in code
+    assert "if (!isNonEmptyString(target))" in code
+    # the disabled attribute is applied centrally by updateSubmitDisabled (also
+    # consults the in-flight guard), not hand-set per render path
+    assert "updateSubmitDisabled()" in code
+    assert 'btn.setAttribute("disabled", "")' in code or 'setAttribute("disabled", "")' in code
+    assert 'btn.removeAttribute("disabled")' in code or 'removeAttribute("disabled")' in code
 
 
 def test_target_options_come_from_the_api_catalog() -> None:

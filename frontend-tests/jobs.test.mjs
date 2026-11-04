@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 
-import { showRoute } from "../frontend/js/app.js";
-import "../frontend/js/views/jobs.js";
+import { showRoute } from "../app/frontend/js/app.js";
+import "../app/frontend/js/views/jobs.js";
 import {
   FakeResponse,
   click,
@@ -739,5 +739,277 @@ describe("jobs - in-flight guards reset on re-entry", () => {
     click(yes2);
     await flush();
     assert.equal(deletes, 2, "re-entry must reset the latched delete guard");
+  });
+});
+
+describe("jobs - list request sequencing", () => {
+  const FULL_PAGE = {
+    jobs: [
+      { job_id: FULL, status: "simulated", created_at: 1700000001, target: "pdf-document" },
+      { job_id: "22222222-2222-4222-8222-222222222222", status: "denied", created_at: 1700000002, target: "zip-archive" },
+    ],
+    count: 2,
+    total: 120,
+    limit: 50,
+    offset: 0,
+  };
+  const FILTERED_PAGE = {
+    jobs: [
+      { job_id: "66666666-6666-4666-8666-666666666666", status: "simulated", created_at: 1700000009, target: "pdf-document" },
+    ],
+    count: 1,
+    total: 1,
+    limit: 50,
+    offset: 0,
+  };
+  const MARKER = "66666666-6666-4666-8666-666666666666";
+
+  /**
+   * Wrap the environment fetch so starting `POST`s behave as usual but
+   * `/api/jobs*` requests become manual, completable deferreds. Everything
+   * else delegates to the fixture fetch. Returns the pending list requests
+   * in issue order; `resolveWith(d, body, status?)` completes one.
+   */
+  function deferredListRequests() {
+    const fixtureFetch = globalThis.fetch;
+    const pending = [];
+    globalThis.fetch = (url, opts) => {
+      const u = String(url);
+      if (u === "/api/jobs" || u.startsWith("/api/jobs?")) {
+        const d = { url: u };
+        d.promise = new Promise((resolve, reject) => {
+          d.resolve = resolve;
+          d.reject = reject;
+        });
+        pending.push(d);
+        return d.promise;
+      }
+      return fixtureFetch(url, opts);
+    };
+    return pending;
+  }
+  const resolveWith = (d, body, status = 200) => d.resolve(new FakeResponse(status, body));
+  const lastPending = (pending) => pending[pending.length - 1];
+
+  it("an older success never overwrites a newer success (reverse order)", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    assert.equal(pending.length, 1);
+
+    // issue the newer request by narrowing the filter
+    const sel = select("jobs-filter-status");
+    sel.value = "simulated";
+    sel.dispatchEvent({ type: "change", target: sel });
+    await flush();
+    assert.equal(pending.length, 2);
+    assert.match(pending[1].url, /status=simulated/);
+
+    // resolve the newer request first, then the older one
+    resolveWith(pending[1], FILTERED_PAGE);
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+    const text = root().textContent;
+    assert.match(text, new RegExp(MARKER), "the newer page must stay on screen");
+    assert.doesNotMatch(text, /11111111-1111-4111-8111-111111111111/, "stale page must not repaint");
+  });
+
+  it("an older success never overwrites a newer failure", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    const sel = select("jobs-filter-status");
+    sel.value = "simulated";
+    sel.dispatchEvent({ type: "change", target: sel });
+    await flush();
+    assert.equal(pending.length, 2);
+
+    resolveWith(pending[1], { detail: "boom" }, 500);
+    await flush();
+    assert.match(root().textContent, /This section failed to load|Cannot reach/);
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+    assert.doesNotMatch(root().textContent, /11111111-1111-4111-8111-111111111111/);
+    assert.match(root().textContent, /This section failed to load|Cannot reach/);
+  });
+
+  it("an older failure never overwrites a newer success", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    const sel = select("jobs-filter-status");
+    sel.value = "simulated";
+    sel.dispatchEvent({ type: "change", target: sel });
+    await flush();
+
+    resolveWith(pending[1], FILTERED_PAGE);
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+
+    resolveWith(pending[0], { detail: "boom" }, 500);
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+    assert.doesNotMatch(root().textContent, /This section failed to load|Cannot reach/);
+  });
+
+  it("loading state stays owned by the newest request only", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    const sel = select("jobs-filter-status");
+    sel.value = "simulated";
+    sel.dispatchEvent({ type: "change", target: sel });
+    await flush();
+    assert.match(root().textContent, /Loading jobs\.\.\./);
+
+    // resolving the superseded request must not clear the pending state
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+    assert.match(root().textContent, /Loading jobs\.\.\./, "the newer request owns the loading state");
+
+    resolveWith(pending[1], FILTERED_PAGE);
+    await flush();
+    assert.doesNotMatch(root().textContent, /Loading jobs\.\.\./);
+    assert.match(root().textContent, new RegExp(MARKER));
+  });
+
+  it("a filter change made while a request is in flight supersedes it", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    const instanceSel = select("jobs-filter-instance");
+    instanceSel.value = INSTANCE;
+    instanceSel.dispatchEvent({ type: "change", target: instanceSel });
+    await flush();
+    assert.equal(pending.length, 2);
+    assert.match(pending[1].url, /instance_id=33333333-3333-4333-8333-333333333333/);
+
+    resolveWith(pending[1], FILTERED_PAGE);
+    await flush();
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+    assert.doesNotMatch(root().textContent, /11111111-1111-4111-8111-111111111111/);
+  });
+
+  it("an in-flight response after navigating away cannot repaint the screen", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    assert.equal(pending.length, 1);
+
+    showRoute("#/targets");
+    await flush();
+    // the targets screen is up; the list response arrives late
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+    assert.doesNotMatch(root().textContent, /11111111-1111-4111-8111-111111111111/);
+
+    // and navigating back issues a fresh request on a fresh slot
+    showRoute("#/jobs");
+    await flush();
+    assert.equal(pending.length, 2);
+    resolveWith(pending[1], FILTERED_PAGE);
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+  });
+
+  it("pagination requests supersede and keep only the latest page on screen", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+    assert.match(root().textContent, /Page 1 of 3 \(120 total\)/);
+
+    click(btn("Next"));
+    await flush();
+    assert.equal(pending.length, 2);
+    assert.match(pending[1].url, /offset=50/);
+
+    // resolve the newer page, then the obsolete whole-page issue
+    resolveWith(pending[1], { ...FILTERED_PAGE, limit: 50, offset: 50 });
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+    assert.doesNotMatch(root().textContent, /Page 1 of 3/);
+  });
+
+  it("an out-of-range page resubmits offset 0 against the newest issue only", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    resolveWith(pending[0], FULL_PAGE);
+    await flush();
+
+    click(btn("Next"));
+    await flush();
+    assert.equal(pending.length, 2);
+
+    // newer page answers empty while on offset 50: resubmits offset 0
+    resolveWith(pending[1], { jobs: [], count: 0, total: 120, limit: 50, offset: 50 });
+    await flush();
+    assert.equal(pending.length, 3);
+    assert.match(pending[2].url, /offset=0/);
+
+    // and the resubmission renders normally
+    resolveWith(pending[2], FULL_PAGE);
+    await flush();
+    assert.match(root().textContent, /11111111-1111-4111-8111-111111111111/);
+  });
+
+  it("initial mount shows a loading state and a failure renders a retry path", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    assert.match(root().textContent, /Loading jobs\.\.\./);
+
+    resolveWith(pending[0], { detail: "boom" }, 500);
+    await flush();
+    assert.match(root().textContent, /This section failed to load|Cannot reach/);
+
+    click(btn("Retry"));
+    await flush();
+    assert.equal(pending.length, 2);
+    assert.match(pending[1].url, /offset=0/);
+
+    resolveWith(pending[1], FULL_PAGE);
+    await flush();
+    assert.match(root().textContent, /11111111-1111-4111-8111-111111111111/);
+  });
+
+  it("an older empty response cannot blank the newer view", async () => {
+    const pending = deferredListRequests();
+
+    showRoute("#/jobs");
+    await flush();
+    const sel = select("jobs-filter-status");
+    sel.value = "simulated";
+    sel.dispatchEvent({ type: "change", target: sel });
+    await flush();
+    assert.equal(pending.length, 2);
+
+    // newer issue resolves with data; the old in-flight issue answers empty
+    resolveWith(pending[1], FILTERED_PAGE);
+    await flush();
+    assert.match(root().textContent, new RegExp(MARKER));
+
+    resolveWith(pending[0], { jobs: [], count: 0, total: 0, limit: 50, offset: 0 });
+    await flush();
+    const text = root().textContent;
+    assert.match(text, new RegExp(MARKER));
+    assert.doesNotMatch(text, /No jobs recorded yet/);
+    assert.doesNotMatch(text, /No jobs match your filters/);
   });
 });

@@ -2,8 +2,9 @@
 #
 # Runs the real application from the source tree via the supported entry
 # point (``python -m uvicorn app.api.app:app``).  The frontend is served
-# by the application itself; there is no separate build step.  No engine
-# or password-cracking tool is included or executed - by design.
+# by the application itself from ``app/frontend/`` (inside the package, so
+# every supported install carries it); there is no separate build step.  No
+# engine or password-cracking tool is included or executed - by design.
 
 # Base image pinned by the multi-arch index digest (resolved via
 # ``docker buildx imagetools inspect python:3.13-slim``): tags are
@@ -18,17 +19,17 @@ WORKDIR /app
 # Dependencies install from the runtime-only hash-verified lock (every
 # artifact hash from the PyPI JSON API; the same pins as requirements.lock,
 # restricted to the runtime closure so no test, lint or typing tooling
-# ships in the image).  The project itself installs with --no-deps so pip
-# never re-resolves anything unlocked.  The dependency layer is copied and
-# installed before the source so it stays cacheable across source changes;
-# the source tree stays in place because the frontend is resolved relative
-# to the package files.  Note: pip's isolated build environment fetches
-# setuptools (build backend) unhashed - documented in THREAT_MODEL.md.
+# ships in the image).  The dependency layer is copied and installed before
+# the source so it stays cacheable across source changes; the project
+# itself installs with --no-deps so pip never re-resolves anything
+# unlocked.  The frontend is served from ``app/frontend/`` (inside the
+# package; the wheel carries it).  Note: pip's isolated build environment
+# fetches setuptools (build backend) unhashed - documented in THREAT_MODEL.md.
 COPY pyproject.toml requirements.runtime.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.runtime.lock
 
+# The SPA ships inside the package (``app/frontend/``), so one COPY covers it.
 COPY app ./app
-COPY frontend ./frontend
 
 RUN pip install --no-cache-dir --no-deps . \
     && useradd --create-home --uid 1000 passorch \

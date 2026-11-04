@@ -52,7 +52,7 @@ import {
   SimulatedOnlyBadge,
   SimulationNotice,
 } from "../components.js";
-import { button, downloadBlob, empty, h, kv, pending, render, table, text } from "../dom.js";
+import { button, downloadBlob, empty, h, kv, pending, render, table, text, asArray } from "../dom.js";
 
 /* ---- module state --------------------------------------------------------- */
 
@@ -72,6 +72,14 @@ let filterSlot = null;
 let exportStatusSlot = null;
 let detailSelectedJobId = "";
 /**
+ * Monotonic generation for the list-request lifecycle. Every `renderList()`
+ * call takes a fresh generation and applies its findings - data, loading and
+ * error state alike - only while it is still the most recent one and while
+ * the view still hangs off the slot it started on. An obsolete response can
+ * therefore never overwrite a newer result. Module-local on purpose.
+ */
+let listGeneration = 0;
+/**
  * Pagination + filtering for the list. `instanceFilter` is `""` (all),
  * `"none"` (jobs recorded with no instance) or a concrete instance id.
  */
@@ -86,10 +94,6 @@ let paginationState = {
 };
 
 /* ---- helpers -------------------------------------------------------------- */
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
@@ -505,7 +509,12 @@ async function renderList() {
   if (!listSlot) {
     return;
   }
-  render(listSlot, pending("Loading jobs..."));
+  // Take a fresh generation before issuing the request. Whatever answers
+  // later, only the most recent issue may touch the slot or `paginationState`.
+  const generation = ++listGeneration;
+  const slot = listSlot;
+
+  render(slot, pending("Loading jobs..."));
   const params = new URLSearchParams();
   if (paginationState.statusFilter) params.set("status", paginationState.statusFilter);
   if (paginationState.targetFilter) params.set("target", paginationState.targetFilter);
@@ -520,8 +529,13 @@ async function renderList() {
   params.set("offset", String(paginationState.offset));
   const qs = params.toString();
   const res = await api.get(qs ? "/api/jobs?" + qs : "/api/jobs");
+  if (generation !== listGeneration || slot !== listSlot) {
+    // A newer request superseded this one, or the view navigated away and a
+    // fresh one was mounted: whatever this response holds, nobody may see it.
+    return;
+  }
   if (!res.ok) {
-    render(listSlot, [InlineError(res.error), RetryButton(renderList)]);
+    render(slot, [InlineError(res.error), RetryButton(renderList)]);
     return;
   }
   const jobs = asArray(res.data && res.data.jobs).filter(
@@ -531,7 +545,7 @@ async function renderList() {
   paginationState.total = total;
 
   if (jobs.length === 0 && paginationState.offset === 0) {
-    render(listSlot, [
+    render(slot, [
       hasActiveFilters()
         ? empty(
             "No jobs match your filters",
@@ -542,6 +556,9 @@ async function renderList() {
     return;
   }
   if (jobs.length === 0) {
+    if (generation !== listGeneration || slot !== listSlot) {
+      return;
+    }
     paginationState.offset = 0;
     renderList();
     return;
@@ -571,7 +588,7 @@ async function renderList() {
 
   // JobSummary only: `instance_id`, `failure_reason` and `preview` are
   // JobInfo-only and are deliberately NOT read from list rows.
-  render(listSlot, [
+  render(slot, [
     table(
       ["Job", "Status", "Target", "Created", "", ""],
       jobs.map((job) => [

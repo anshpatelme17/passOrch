@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 
-import { ROUTES, parseHash, showRoute, hasView, getView, titleFor } from "../frontend/js/app.js";
-import "../frontend/js/views/dashboard.js";
-import "../frontend/js/views/engines.js";
-import "../frontend/js/views/targets.js";
-import "../frontend/js/views/instances.js";
-import "../frontend/js/views/plan.js";
-import "../frontend/js/views/jobs.js";
+import { ROUTES, parseHash, showRoute, hasView, getView, titleFor } from "../app/frontend/js/app.js";
+import { asArray } from "../app/frontend/js/dom.js";
+import "../app/frontend/js/views/dashboard.js";
+import "../app/frontend/js/views/engines.js";
+import "../app/frontend/js/views/targets.js";
+import "../app/frontend/js/views/instances.js";
+import "../app/frontend/js/views/plan.js";
+import "../app/frontend/js/views/jobs.js";
 import { allText, click, containing, rootText, setup, flush, byTag } from "./_fixtures.mjs";
 
 beforeEach(() => {
@@ -44,6 +45,38 @@ describe("module loading", () => {
       ROUTES.map((r) => r.path).sort(),
       ["/dashboard", "/engines", "/instances", "/jobs", "/plan", "/targets"]
     );
+  });
+});
+
+describe("asArray (shared, app/frontend/js/dom.js)", () => {
+  it("passes arrays through by identity (no copy)", () => {
+    const value = [1, 2, 3];
+    assert.equal(asArray(value), value);
+    assert.deepEqual(asArray(value), [1, 2, 3]);
+  });
+
+  it("maps null and undefined to a fresh empty array", () => {
+    assert.deepEqual(asArray(null), []);
+    assert.deepEqual(asArray(undefined), []);
+    assert.notEqual(asArray(null), asArray(null), "each call yields a new array");
+  });
+
+  it("maps every non-array primitive to an empty array", () => {
+    for (const value of [0, 1, -1, "", "nope", true, false, Symbol.iterator]) {
+      assert.deepEqual(asArray(value), []);
+    }
+  });
+
+  it("maps plain and array-like objects to an empty array", () => {
+    assert.deepEqual(asArray({}), []);
+    assert.deepEqual(asArray({ length: 3, 0: "a", 1: "b", 2: "c" }), []);
+    assert.deepEqual(asArray({ targets: ["a"] }), []);
+  });
+
+  it("maps iterables and other exotic values to an empty array", () => {
+    assert.deepEqual(asArray(new Set([1, 2])), []);
+    assert.deepEqual(asArray(new Map([[1, 2]])), []);
+    assert.deepEqual(asArray("a,b"), []);
   });
 });
 
@@ -147,6 +180,30 @@ describe("parseHash", () => {
     });
     assert.equal(info.path, "/plan");
     assert.match(rootText(root()), /Simulation only/);
+  });
+
+  it("keeps a literal `?` inside the query value as data, not a delimiter", () => {
+    // A raw "?" inside a parameter value belongs to the value - it is not a
+    // second separator that silently truncates the parameter.
+    const parsed = parseHash("#/plan?target=a?b");
+    assert.equal(parsed.path, "/plan");
+    assert.equal(parsed.params.target, "a?b");
+  });
+
+  it("keeps a literal `=` inside the query value instead of truncating it", () => {
+    const parsed = parseHash("#/plan?target=a=b");
+    assert.equal(parsed.path, "/plan");
+    assert.equal(parsed.params.target, "a=b");
+  });
+
+  it("decodes ampersand and equals inside a value after one decode", () => {
+    const parsed = parseHash("#/plan?target=a%26b%3Dc");
+    assert.equal(parsed.params.target, "a&b=c");
+  });
+
+  it("round-trips an encoded percent sign without corruption", () => {
+    const parsed = parseHash("#/plan?target=a%25b");
+    assert.equal(parsed.params.target, "a%b");
   });
 });
 

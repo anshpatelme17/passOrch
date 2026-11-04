@@ -1,6 +1,6 @@
 """Phase 4B.3 - Target instances view contract tests.
 
-Static and structural assertions on ``frontend/js/views/instances.js`` plus its
+Static and structural assertions on ``app/frontend/js/views/instances.js`` plus its
 integration with the existing frontend shell.
 
 No JavaScript runtime is available in this repository (Node is absent; the
@@ -414,7 +414,10 @@ def test_empty_state_prompts_creation() -> None:
 
 def test_list_filters_malformed_rows_defensively() -> None:
     code = INSTANCES_CODE
-    assert 'Array.isArray(value)' in code
+    dom = _read(FRONTEND_DIR / "js" / "dom.js")
+    # the shared tolerant-array guard lives in dom.js; the view must use it
+    assert "asArray(" in code
+    assert "asArray" in dom
     assert ".filter(" in code
     assert 'isNonEmptyString(i.id)' in code
 

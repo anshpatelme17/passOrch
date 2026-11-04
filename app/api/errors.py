@@ -10,7 +10,7 @@ is a short human sentence (never an exception text, SQL fragment, file path or
 traceback); any extra keys are structured payload specific to that code (for
 example ``supported_targets`` on ``unknown_target``).  The SPA's
 ``describeError`` renders this object shape as ``"<message> (<code>)"``, and the
-string fallback in ``frontend/js/api.js`` remains only for robustness against
+string fallback in ``app/frontend/js/api.js`` remains only for robustness against
 proxies or older servers - the server itself no longer emits bare-string
 details.
 

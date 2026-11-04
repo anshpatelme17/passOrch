@@ -1,7 +1,7 @@
 /*
  * Test fixtures: controllable `fetch` and deterministic API responses.
  *
- * The application talks to the backend only through `frontend/js/api.js`,
+ * The application talks to the backend only through `app/frontend/js/api.js`,
  * which calls the global `fetch`. Installing a scripted `fetch` here lets the
  * real client - and therefore every real view - run end to end without a
  * network, a server, or any change to production code.
@@ -469,7 +469,7 @@ export function setup(routes) {
 }
 
 /**
- * Build the navigation bar exactly as `frontend/index.html` declares it, so
+ * Build the navigation bar exactly as `app/frontend/index.html` declares it, so
  * `markActiveNav` in app.js has real elements to mark.
  */
 export function installNav(doc) {

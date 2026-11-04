@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 
-import { showRoute } from "../frontend/js/app.js";
-import "../frontend/js/views/targets.js";
-import "../frontend/js/views/jobs.js";
+import { showRoute } from "../app/frontend/js/app.js";
+import "../app/frontend/js/views/targets.js";
+import "../app/frontend/js/views/jobs.js";
 import { FakeResponse, containing, flush, setup } from "./_fixtures.mjs";
 
 let env;

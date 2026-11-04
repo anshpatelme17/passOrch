@@ -279,6 +279,24 @@ class PersistentTargetInstanceStore(TargetInstanceStore):
     validation, so a construction that fails never deletes rows.  An
     unusable, corrupt, newer-schema or invalid database raises
     ``InstancePersistenceError`` instead of silently starting empty.
+
+    Locking
+    ------
+
+    The store's single RLock is part of the atomicity contract, not an
+    accident to be optimised away: the bounded in-memory container, the
+    SQLite mirror and the rollback compensation that keeps the two views
+    identical are one critical section.  SQLite I/O therefore runs under
+    the lock, so a reader can never observe an instance the database does
+    not hold - nor a database row the memory container disagrees with
+    after a failure - and an eviction-bearing insert commits the insert
+    and the FIFO victim-row delete in one transaction.  ``delete`` and
+    ``update`` are deliberately database-first so a failed write never
+    reaches the memory copy.  Shrinking this section would split the
+    memory mutation from the database outcome: any failure would either
+    publish a phantom instance to readers or strand a durable row with no
+    memory record.  Keep the section whole: do not reduce the lock scope
+    without redesigning the mirror invariants.
     """
 
     def __init__(

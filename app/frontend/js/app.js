@@ -82,16 +82,26 @@ function safeDecode(value) {
 /** Parse `location.hash` into `{ path, params }`; unknown -> the dashboard. */
 export function parseHash(hash) {
   const raw = typeof hash === "string" && hash.startsWith("#") ? hash.slice(1) : hash || "";
-  const [pathPart, queryPart] = raw.split("?");
+  // Split at the FIRST `?` only: the path is everything before it; the query
+  // string is everything after. A second `?` belongs to the query data (it can
+  // never appear raw in a well-formed link — it would be `%3F`), and must not
+  // truncate the value being decoded here.
+  const q = raw.indexOf("?");
+  const pathPart = q === -1 ? raw : raw.slice(0, q);
+  const queryPart = q === -1 ? "" : raw.slice(q + 1);
   const path = pathPart || "/dashboard";
   const resolved = ROUTE_PATHS.has(path) ? path : "/dashboard";
 
   const params = {};
   if (queryPart) {
     for (const pair of queryPart.split("&")) {
-      const [key, value] = pair.split("=");
+      // Split at the FIRST `=` only: a decoded value may legitimately contain
+      // further `=` signs and must not be silently cut off.
+      const eq = pair.indexOf("=");
+      const key = eq === -1 ? pair : pair.slice(0, eq);
+      const value = eq === -1 ? "" : pair.slice(eq + 1);
       if (key) {
-        params[safeDecode(key)] = safeDecode(value || "");
+        params[safeDecode(key)] = safeDecode(value);
       }
     }
   }

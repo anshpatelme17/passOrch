@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 
-import { showRoute } from "../frontend/js/app.js";
-import "../frontend/js/views/dashboard.js";
+import { showRoute } from "../app/frontend/js/app.js";
+import "../app/frontend/js/views/dashboard.js";
 import { FakeResponse, containing, flush, setup } from "./_fixtures.mjs";
 
 const HEALTH = { status: "ok", mode: "simulated" };

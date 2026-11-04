@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 
-import { describeError, request, api, API_ERRORS } from "../frontend/js/api.js";
+import { describeError, request, api, encodePathSegment, API_ERRORS } from "../app/frontend/js/api.js";
 import { FakeResponse, flush } from "./_fixtures.mjs";
 
 const OBJECT_ERROR = {
@@ -271,6 +271,50 @@ describe("api.js - request construction", () => {
     };
     await api.get("/api/jobs", controller.signal);
     assert.equal(seen.signal, controller.signal);
+  });
+});
+
+describe("api.js - encodePathSegment", () => {
+  it("leaves ordinary identifiers unchanged", () => {
+    assert.equal(encodePathSegment("pdf-document"), "pdf-document");
+    assert.equal(encodePathSegment("john-2024"), "john-2024");
+  });
+
+  it("escapes every structural path and query character", () => {
+    assert.equal(encodePathSegment("a/b"), "a%2Fb");
+    assert.equal(encodePathSegment("a?b"), "a%3Fb");
+    assert.equal(encodePathSegment("a#b"), "a%23b");
+    assert.equal(encodePathSegment("a%b"), "a%25b");
+    assert.equal(encodePathSegment("a&b"), "a%26b");
+    assert.equal(encodePathSegment("a=b"), "a%3Db");
+  });
+
+  it("encodes spaces and non-ASCII bytes as UTF-8 percent-encoding", () => {
+    assert.equal(encodePathSegment("office document"), "office%20document");
+    assert.equal(encodePathSegment("office document ™"), "office%20document%20%E2%84%A2");
+  });
+
+  it("encodes a percent sign exactly once (no double encoding)", () => {
+    // The raw value %25 arrives (decoded) as "%", which encodes to %25 once.
+    assert.equal(encodePathSegment("a%2Fb"), "a%252Fb");
+    assert.equal(encodePathSegment("%"), "%25");
+    assert.equal(encodePathSegment("100%"), "100%25");
+  });
+
+  it("never emits a raw structural marker", () => {
+    for (const hostile of ["/|/", "x?y", "q&b", "e=r", "%%", "..%2Fjobs", "a#b", "  "]) {
+      const encoded = encodePathSegment(hostile);
+      assert.equal(/[\/?#&=\s]/.test(encoded), false, `${hostile} leaked structure: ${encoded}`);
+      // Every "%" must open a well-formed two-hex-digit escape.
+      const unescaped = encoded.replace(/%[0-9A-Fa-f]{2}/g, "");
+      assert.equal(unescaped.includes("%"), false, `${hostile} left a raw percent: ${encoded}`);
+    }
+  });
+
+  it("handles empty, null and undefined without throwing", () => {
+    assert.equal(encodePathSegment(""), "");
+    assert.equal(encodePathSegment(null), "");
+    assert.equal(encodePathSegment(undefined), "");
   });
 });
 

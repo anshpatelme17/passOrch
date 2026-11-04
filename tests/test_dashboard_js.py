@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DASHBOARD = Path("frontend/js/dashboard.js")
+DASHBOARD = Path("app/frontend/js/dashboard.js")
 SOURCE = DASHBOARD.read_text(encoding="utf-8")
 
 #: Code with comments stripped: assertions only apply to executable code.

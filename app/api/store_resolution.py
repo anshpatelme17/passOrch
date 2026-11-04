@@ -1,30 +1,32 @@
 """Steps 12/13B follow-up - shared fail-closed store resolution for the API.
 
 Every HTTP-facing read or write needs the store bound to *this* application's
-state.  Application state is considered miswired (not merely absent) when an
-attribute is present but fails its store's runtime type check; in that case
-the request fails closed with the shared generic ``503
-persistence_unavailable`` detail - no exception text, class name, repr or
-path - and the foreign object is never read or written, so it can neither
-contaminate a process-wide default nor crash a handler with a raw attribute
-error.
+state.  Application state is considered miswired when an attribute is missing,
+``None``, or fails its store's runtime type check; in that case the request
+fails closed with the shared generic ``503 persistence_unavailable`` detail -
+no exception text, class name, repr or path - and no default or foreign
+object is ever read or written, so state can neither contaminate a
+process-wide default nor crash a handler with a raw attribute error.
 
 Resolution rules, preserved verbatim from the previous per-module
 implementations in ``app.api.routes.jobs`` (``_resolve_job_store``,
 ``_resolve_target_instance_store``) and ``app.api.routes.target_instances``
 (``_get_store``):
 
-* an absent or ``None`` ``job_store`` / ``target_instance_store`` attribute
-  keeps the historical fallback to the process-wide default store (the
-  documented unconfigured state) - it is never treated as a failure;
+* a ``job_store`` / ``target_instance_store`` attribute that is missing,
+  ``None`` or of the wrong type fails closed with the generic envelope; the
+  process-wide default store is never silently substituted;
 * a present store is accepted only once it passes its concrete
   :class:`~app.engines.jobs.JobStore` or
-  :class:`~app.engines.target_instances.TargetInstanceStore` check;
-* a wrong-typed store is a failure, never a silent fallback.
+  :class:`~app.engines.target_instances.TargetInstanceStore` check.
 
-This module imports nothing from the routers, so both routers (and the
-``app.api.app`` readiness probe) can depend on it without a cycle while the
-error body stays byte-identical.
+``create_app`` binds a concrete store for every application it builds -
+unconfigured deployments get the documented in-memory default stores at
+construction time (``default_job_store`` / ``default_target_instance_store``),
+so a missing attribute at request time always means the state was miswired
+*after* construction.  This module imports nothing from the routers, so both
+routers (and the ``app.api.app`` readiness probe) can depend on it without a
+cycle while the error body stays byte-identical.
 """
 
 from __future__ import annotations
@@ -33,11 +35,8 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
-from app.engines.jobs import JobStore, default_job_store
-from app.engines.target_instances import (
-    TargetInstanceStore,
-    default_target_instance_store,
-)
+from app.engines.jobs import JobStore
+from app.engines.target_instances import TargetInstanceStore
 
 __all__ = [
     "PERSISTENCE_ERROR",
@@ -71,17 +70,16 @@ def persistence_unavailable_detail(subject: str = "job") -> dict[str, str]:
 def job_store_from_state(state: Any) -> JobStore:
     """The job store behind this state (routers and the readiness probe).
 
-    An absent store keeps the historical fallback to the process-wide
-    default (unconfigured state).  A store that is present but fails the
-    ``JobStore`` type check means application state was miswired: the
-    request fails closed with the shared generic ``503
-    persistence_unavailable`` detail - never the offending object's class
-    name, repr or path - and the foreign object is never read or written.
+    A store that is missing, ``None``, or fails the ``JobStore`` type check
+    means application state was miswired: the request fails closed with the
+    shared generic ``503 persistence_unavailable`` detail - never the
+    offending object's class name, repr or path - and the foreign object is
+    never read or written.  The process-wide default store is never silently
+    substituted for a missing attribute: unconfigured applications already
+    carry their documented default store on their state.
     """
 
     store = getattr(state, "job_store", None)
-    if store is None:
-        return default_job_store()
     if not isinstance(store, JobStore):
         raise HTTPException(
             status_code=503,
@@ -93,19 +91,15 @@ def job_store_from_state(state: Any) -> JobStore:
 def target_instance_store_from_state(state: Any) -> TargetInstanceStore:
     """The target-instance store behind this state (routers and readiness).
 
-    An absent store keeps the historical fallback to the process-wide
-    default (unconfigured state).  A store that is present but fails the
-    ``TargetInstanceStore`` type check means application state was
-    miswired: the request fails closed with the shared generic ``503
-    persistence_unavailable`` detail - never the offending object's class
-    name, repr or path - and the foreign object is never read or written,
-    so it can neither contaminate the default store nor crash a handler
-    with a raw attribute error.
+    A store that is missing, ``None``, or fails the ``TargetInstanceStore``
+    type check means application state was miswired: the request fails
+    closed with the shared generic ``503 persistence_unavailable`` detail -
+    never the offending object's class name, repr or path - and the foreign
+    object is never read or written.  The process-wide default store is
+    never silently substituted for a missing attribute.
     """
 
     store = getattr(state, "target_instance_store", None)
-    if store is None:
-        return default_target_instance_store()
     if not isinstance(store, TargetInstanceStore):
         raise HTTPException(
             status_code=503,

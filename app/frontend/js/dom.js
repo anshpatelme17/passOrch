@@ -51,6 +51,27 @@ export function h(tag, options) {
   return el;
 }
 
+/* ---- shared tolerant-array guard (Phase 2D/6A/7B/M-L18) -------------------- */
+
+/**
+ * Coerce a value that should be an array to an array, or to an empty one.
+ *
+ * Every view renders lists straight out of API responses; the payloads are
+ * not trusted and the response may be malformed or missing a field entirely.
+ * Non-array values (null, undefined, strings, numbers, plain objects) become
+ * an empty array instead of being trusted or crashed on.
+ *
+ * Semantics, kept deliberately narrow:
+ *   - an array passes through by identity (the caller may mutate or reuse it);
+ *   - anything else - including `null`, `undefined`, strings, numbers,
+ *     objects, array-likes and iterables - becomes `[]`;
+ *   - it never copies: if an array instance is passed, the same reference
+ *     is returned.
+ */
+export function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 /** Wrap an untrusted value in a text node. */
 export function text(value) {
   return document.createTextNode(value === undefined || value === null ? "" : String(value));

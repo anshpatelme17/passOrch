@@ -9,7 +9,7 @@ the security posture.
 ## Layers
 
 ```
-browser SPA (frontend/js, no build step)
+browser SPA (app/frontend/js, no build step)
         │  same-origin fetch of /api/* and /health
         ▼
 request guards (app/api/app.py middleware)
@@ -78,7 +78,7 @@ read, no writes, no registry lookup, no execution.
 | Adapters | `app/engines/{adapter,adapter_registry,john,registry,service}.py` | Protected simulation adapters |
 | Discovery | `app/engines/discovery/*` | Allowlisted metadata discovery (the only subprocess-capable path, `shell=False`) |
 | Persistence | `app/engines/{persistence,job_persistence,instance_persistence}.py` | Schema-versioned SQLite mirror, online backup |
-| Frontend | `frontend/index.html`, `frontend/js/*` | SPA shell, API client, views/components |
+| Frontend | `app/frontend/index.html`, `app/frontend/js/*` | SPA shell, API client, views/components (bundled into the wheel) |
 
 The adapter/selection/policy/discovery-core files listed above are
 **protected**: behaviour changes go through their test suites only.
@@ -97,9 +97,9 @@ The adapter/selection/policy/discovery-core files listed above are
 
 ## Frontend structure
 
-* `frontend/js/api.js` — the only fetch site; URL prefixes are allowlisted
+* `app/frontend/js/api.js` — the only fetch site; URL prefixes are allowlisted
   (`/api/`, `/health`).
-* `frontend/js/views/*.js` — one module per SPA view (dashboard, engines,
+* `app/frontend/js/views/*.js` — one module per SPA view (dashboard, engines,
   targets, jobs, instances, plan); rendering goes through `components.js` helpers that
   set `textContent` only (no `innerHTML` anywhere).
 * No bundler, no framework, no external assets; the app serves `index.html`

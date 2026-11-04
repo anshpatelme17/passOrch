@@ -52,7 +52,7 @@ def test_dockerfile_runs_the_real_app_as_non_root() -> None:
     assert "app.api.app:app" in text
     assert "--host" in text and "0.0.0.0" in text
     assert "COPY app ./app" in text
-    assert "COPY frontend ./frontend" in text
+    assert "COPY app ./app" in text
 
 
 def test_dockerfile_contains_no_secrets_and_skips_vcs() -> None:

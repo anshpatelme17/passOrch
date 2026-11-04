@@ -27,6 +27,17 @@ test = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+# The SPA is data of the ``app`` package (``app/frontend/``): shipping it in
+# the wheel is what lets an installed package serve ``/`` from any working
+# directory, with no source tree or extra data-files step.
+[tool.setuptools.package-data]
+"app" = [
+    "frontend/index.html",
+    "frontend/css/*.css",
+    "frontend/js/*.js",
+    "frontend/js/views/*.js",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

@@ -34,13 +34,7 @@ import {
   SimulatedOnlyBadge,
   StatusBadge,
 } from "../components.js";
-import { empty, h, kv, pending, render, table, text } from "../dom.js";
-
-/* ---- helpers -------------------------------------------------------------- */
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
+import { empty, h, kv, pending, render, table, text, asArray } from "../dom.js";
 
 /* ---- section: health ------------------------------------------------------ */
 

@@ -2,7 +2,7 @@
 
 Covers the wiring added to ``create_app``:
 
-* ``GET /`` serves ``frontend/index.html`` as HTML;
+* ``GET /`` serves ``app/frontend/index.html`` as HTML;
 * ``/static/`` serves each frontend asset with the right content type;
 * the API surface (``/health``, ``/docs``, ``/openapi.json``, every router)
   is unchanged by the mount;
@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # pragma: no cover - import bootstrap
     sys.path.insert(0, str(ROOT))
 
-FRONTEND = ROOT / "frontend"
+FRONTEND = ROOT / "app" / "frontend"
 INDEX = FRONTEND / "index.html"
 
 
@@ -41,7 +41,7 @@ def _client() -> TestClient:
 
 
 def test_frontend_directory_is_present_for_this_suite() -> None:
-    assert INDEX.is_file(), "frontend/index.html must exist for the serving tests"
+    assert INDEX.is_file(), "app/frontend/index.html must exist for the serving tests"
     assert (FRONTEND / "js" / "app.js").is_file()
     assert (FRONTEND / "css" / "styles.css").is_file()
 
@@ -49,9 +49,9 @@ def test_frontend_directory_is_present_for_this_suite() -> None:
 def test_frontend_dir_is_derived_from_the_source_not_the_cwd() -> None:
     from app.api import app as app_module
 
-    assert app_module.FRONTEND_DIR == ROOT / "frontend"
-    # app/api/app.py -> app/api -> app -> repo root -> frontend
-    assert app_module.FRONTEND_DIR == Path(app_module.__file__).resolve().parents[2] / "frontend"
+    assert app_module.FRONTEND_DIR == ROOT / "app" / "frontend"
+    # app/api/app.py -> app/api -> app -> app/frontend
+    assert app_module.FRONTEND_DIR == Path(app_module.__file__).resolve().parents[1] / "frontend"
 
 
 def test_frontend_is_not_mounted_at_the_root_prefix() -> None:

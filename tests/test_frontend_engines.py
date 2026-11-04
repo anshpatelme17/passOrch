@@ -1,6 +1,6 @@
 """Phase 6A / M1.3 - Engines view contract tests.
 
-Static and structural assertions on ``frontend/js/views/engines.js`` plus
+Static and structural assertions on ``app/frontend/js/views/engines.js`` plus
 integration with the Phase 4A shell. Verifies:
 
 * which endpoints the view talks to, and only those;

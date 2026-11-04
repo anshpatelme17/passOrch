@@ -44,7 +44,7 @@ import {
   SAFE_FAILURE_MESSAGE,
   SimulationNotice,
 } from "../components.js";
-import { badge, button, empty, h, pending, render, table, text } from "../dom.js";
+import { badge, button, empty, h, pending, render, table, text, asArray } from "../dom.js";
 
 /* ---- limits mirrored from app/engines/target_instances.py ----------------- */
 
@@ -78,10 +78,6 @@ let paginationState = {
 };
 
 /* ---- helpers -------------------------------------------------------------- */
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;

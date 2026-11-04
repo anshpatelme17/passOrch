@@ -1993,21 +1993,27 @@ def test_api_jobs_target_instance_wrong_type_auth_unchanged() -> None:
     assert poison.accessed == []
 
 
-def test_api_jobs_target_instance_none_store_fallback() -> None:
-    """Missing/None store preserves the historical default-store fallback."""
+def test_api_jobs_target_instance_none_store_fails_closed() -> None:
+    """A missing target-instance store answers 503; it never reaches a default.
+
+    ``create_app`` always binds a concrete instance store at construction,
+    so an attribute of ``None`` means the state was miswired: resolution must
+    fail closed with the shared generic envelope instead of substituting the
+    process-wide default store.
+    """
+
     client = TestClient(create_app(job_store=JobStore()))
-    # Simulate unconfigured state (None) â€” should fall back to default store.
     client.app.state.target_instance_store = None
-
-    # An instance seeded in the default store should be resolvable.
-    default_store = default_target_instance_store()
-    from app.core.orchestrator.target_instances import create_target_instance
-
-    rec = create_target_instance("none-fallback", "pdf-document", store=default_store)
-    iid = rec.id
-    try:
-        res = client.post("/api/jobs", json={"target": "pdf-document", "instance_id": iid})
-        assert res.status_code == 200
-        assert res.json()["instance_id"] == iid
-    finally:
-        default_store.reset()
+    before = len(default_target_instance_store())
+    res = client.post(
+        "/api/jobs",
+        json={"target": "pdf-document", "instance_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert res.status_code == 503
+    assert res.json() == {
+        "detail": {
+            "error": "persistence_unavailable",
+            "detail": "target instance storage is temporarily unavailable",
+        }
+    }
+    assert len(default_target_instance_store()) == before

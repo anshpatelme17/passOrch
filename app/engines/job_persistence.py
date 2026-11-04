@@ -503,6 +503,23 @@ class PersistentJobStore(JobStore):
     validation, so a construction that fails never deletes rows.  An
     unusable, corrupt, newer-schema or invalid database raises
     ``JobPersistenceError`` instead of silently starting empty.
+
+    Locking
+    ------
+
+    The store's single RLock is part of the atomicity contract, not an
+    accident to be optimised away: the bounded in-memory container, the
+    SQLite mirror and the rollback compensation that keeps the two views
+    identical are one critical section.  SQLite I/O therefore runs under
+    the lock, so a reader can never observe a job the database does not
+    hold - nor a database row the memory container disagrees with after a
+    failure - and an eviction-bearing insert commits the insert and the
+    FIFO victim-row delete in one transaction.  Shrinking this section
+    would split the memory mutation from the database outcome: any failure
+    would either publish a phantom job to readers (memory written, database
+    rolled back) or strand a durable row with no memory record (database
+    written, memory rolled back).  Keep the section whole: do not reduce
+    the lock scope without redesigning the mirror invariants.
     """
 
     def __init__(

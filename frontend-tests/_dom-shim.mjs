@@ -4,7 +4,7 @@
  * WHY THIS EXISTS
  * The frontend is browser ES modules that call a small, well-defined DOM
  * subset. This shim implements exactly that subset - and nothing else - so the
- * REAL modules in `frontend/js/` can be imported and executed by Node.js with
+ * REAL modules in `app/frontend/js/` can be imported and executed by Node.js with
  * no dependencies (no jsdom, no browser download).
  *
  * It is test-only harness code. It is never imported by the application.

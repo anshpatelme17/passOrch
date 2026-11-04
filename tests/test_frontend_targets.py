@@ -1,6 +1,6 @@
 """Phase 4B.2 - Targets view contract tests.
 
-Static and structural assertions on ``frontend/js/views/targets.js`` and its
+Static and structural assertions on ``app/frontend/js/views/targets.js`` and its
 integration with the Phase 4A shell.
 
 No JavaScript runtime is available in this repository (Node is absent; the
@@ -334,7 +334,10 @@ def test_no_unused_imports() -> None:
 
 def test_view_defensively_filters_malformed_rows() -> None:
     code = TARGETS_CODE
-    assert "Array.isArray(value)" in code
+    dom = _read(FRONTEND_DIR / "js" / "dom.js")
+    # the shared tolerant-array guard lives in dom.js; the view must use it
+    assert "asArray(" in code
+    assert "asArray" in dom
     assert "targets.filter(" in code
     assert 'typeof t.target === "string"' in code
 

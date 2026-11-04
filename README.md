@@ -9,7 +9,7 @@ PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend
 - **Data layer** (`app/engines/`): Immutable records, bounded thread-safe stores, capability parsing, execution policy
 - **Orchestration layer** (`app/core/orchestrator/`): Composes data layer with selection, authorization, and simulation
 - **API layer** (`app/api/`): FastAPI routes with strict Pydantic schemas (`extra="forbid"`)
-- **Frontend** (`frontend/`): Hash-routed SPA with safe DOM helpers (no `innerHTML`)
+- **Frontend** (`app/frontend/`): Hash-routed SPA with safe DOM helpers (no `innerHTML`); ships in the wheel as package data
 
 ## Security Model
 
@@ -136,6 +136,12 @@ already includes the test tooling (`pytest`, `httpx`, `ruff`, `mypy`).
 in `pyproject.toml` remain the source of truth for compatibility. See
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the pin-regeneration
 procedure.)
+
+The SPA ships inside the package (`app/frontend/`, installed as wheel
+package-data), so an installed package serves it from any working
+directory; a source-tree run works unchanged. Missing assets are not
+served silently: `/` then answers one `404 frontend_not_installed`
+detail while the API keeps working.
 
 ## Running
 
@@ -322,11 +328,11 @@ app/
   api/           # FastAPI routes and schemas
   core/          # Orchestration layer
   engines/       # Data layer (stores, discovery, policy)
+  frontend/      # SPA source (bundled into the wheel)
+    js/          # ES modules (api, dom, components, app, main)
+    css/         # Styles
+    views/       # One module per route
 docs/            # Architecture, development, demo, limitations
-frontend/
-  js/            # ES modules (api, dom, components, app, main)
-  css/           # Styles
-  views/         # One module per route
 frontend-tests/  # Node.js test harness
 tests/           # Python test suite
 THREAT_MODEL.md  # Security threat model

@@ -10,10 +10,14 @@ delegates to the injected, allowlist-bound
 ``CapabilityRefreshService`` for metadata discovery only - no endpoint can
 trigger a password audit or any cracking operation.
 
-Phase 4A adds the frontend: ``GET /`` serves ``frontend/index.html`` and
-``/static/`` serves the frontend assets. Both are optional - the factory falls
-back to a JSON body when the frontend directory is absent, so tests and other
-consumers can build the app without shipping assets.
+Phase 4A adds the frontend: ``GET /`` serves ``app/frontend/index.html`` and
+``/static/`` serves the bundled frontend assets.  Both are optional - the
+factory serves a clear ``404 frontend_not_installed`` detail when the frontend
+assets are absent, so tests and other consumers can build the app without
+shipping them; the API routes always work.
+
+The assets live inside the ``app`` package (``app/frontend/``), so the wheel
+carries them and the server finds them from any working directory.
 
 Phases 8A/8B add opt-in persistence: when no store is injected, an explicit
 ``job_db_path`` (or the ``PASSORCH_JOB_DB`` environment variable) opens a
@@ -97,10 +101,11 @@ from app.engines.target_instances import TargetInstanceStore, default_target_ins
 
 __all__ = ["FRONTEND_DIR", "create_app", "app"]
 
-#: ``<repo>/frontend`` derived from this file: app/api/app.py -> app/api -> app ->
-#: repo root. Never from the process working directory, so the mount works
-#: regardless of where the server is started from.
-FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+#: ``<pkg>/frontend`` derived from this file: app/api/app.py -> app/api ->
+#: app -> app/frontend. Never from the process working directory, so the mount
+#: works regardless of where the server is started from or how the package
+#: was installed (source tree, editable install or wheel).
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 
 _STATIC_PREFIX = "/static"
 
@@ -419,9 +424,27 @@ def create_app(
 
 
 def _mount_frontend(application: FastAPI) -> None:
-    """Wire the frontend shell, or fall back to a JSON notice when absent."""
+    """Wire the frontend shell, or serve a clear 404 when assets are absent.
 
-    if not _frontend_available():  # pragma: no cover - exercised by the guard test
+    Missing assets never produce misleading content: the API keeps working,
+    and ``/`` answers one generic ``404 frontend_not_installed`` detail - no
+    paths, no exception text.  (The test-suite builds the shell-less app via
+    this path deliberately.)
+    """
+
+    if not _frontend_available():
+        @application.get("/", tags=["frontend"], include_in_schema=False)
+        def frontend_not_installed() -> JSONResponse:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": {
+                        "error": "frontend_not_installed",
+                        "detail": "the frontend assets are not included in this installation",
+                    }
+                },
+            )
+
         return
 
     application.mount(

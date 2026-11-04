@@ -1,6 +1,6 @@
 """Phase 4A - API client contract tests.
 
-These assert the *specification* the shared client in ``frontend/js/api.js``
+These assert the *specification* the shared client in ``app/frontend/js/api.js``
 implements, by executing the same rules against a Python transcription of the
 response handling. They cover the cases a Python integration test cannot reach
 because they are client-side decisions:
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
+FRONTEND = Path(__file__).resolve().parents[1] / "app" / "frontend"
 API_SOURCE = (FRONTEND / "js" / "api.js").read_text(encoding="utf-8")
 
 API_ERRORS = {

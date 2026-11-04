@@ -27,13 +27,9 @@ import {
   RetryButton,
   SimulationNotice,
 } from "../components.js";
-import { badge, empty, h, pending, render, table, text } from "../dom.js";
+import { badge, empty, h, pending, render, table, text, asArray } from "../dom.js";
 
 /* ---- helpers -------------------------------------------------------------- */
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 /** Render a target's formats as a comma-joined text node, or a dash. */
 function formatsText(formats) {

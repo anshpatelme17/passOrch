@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
-import { api, describeError } from "../frontend/js/api.js";
+import { api, describeError } from "../app/frontend/js/api.js";
 import { ENVELOPE, FakeResponse, installFetch, isEnvelope } from "./_fixtures.mjs";
 
 /**

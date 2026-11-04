@@ -37,6 +37,25 @@ export const TIMEOUT_MESSAGE = "The request timed out. Please try again.";
 export const BODY_UNREADABLE_MESSAGE = "The response could not be read. Please try again.";
 
 /**
+ * Encode one value as a single URL path segment.
+ *
+ * `encodeURIComponent` escapes every character that can change the structure
+ * of a path or query string — `/`, `?`, `#`, `%`, `&`, `=`, spaces and all
+ * non-ASCII bytes. The remaining characters (`A-Z a-z 0-9 - _ . ! ~ * ' ( ))
+ * are legal (sub-)delims in a path segment, so they cannot smuggle structure.
+ *
+ * Pass the RAW value exactly as it arrived decoded (the hash router already
+ * decodes query parameters): do not pre-encode, so nothing is ever encoded
+ * twice (`%` becomes `%25` exactly once).
+ */
+export function encodePathSegment(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return encodeURIComponent(String(value));
+}
+
+/**
  * A default deadline signal, or `undefined` on engines without
  * `AbortSignal.timeout`. We degrade to "no deadline" rather than emulating one
  * with `setTimeout`, which the safety suite forbids in frontend code.

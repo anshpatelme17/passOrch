@@ -11,7 +11,7 @@ the boundary that keeps unsafe sinks and undeclared frameworks out of the
 tree.
 
 These checks deliberately do NOT modify ``tests/test_dashboard_js.py``, which
-continues to pin the Phase 2D ``frontend/js/dashboard.js`` library unchanged.
+continues to pin the Phase 2D ``app/frontend/js/dashboard.js`` library unchanged.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-FRONTEND = ROOT / "frontend"
+FRONTEND = ROOT / "app" / "frontend"
 JS = FRONTEND / "js"
 
 #: Modules owned by Phase 4A/4B (relative to JS_DIR, which is adjusted below).

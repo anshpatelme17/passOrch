@@ -1,6 +1,6 @@
 """Phase 4B.5 - Simulated jobs view contract tests.
 
-Static and structural assertions on ``frontend/js/views/jobs.js`` plus its
+Static and structural assertions on ``app/frontend/js/views/jobs.js`` plus its
 integration with the shared shell and the ``JobDetailView`` component.
 
 No JavaScript runtime is available in this repository (Node is absent; the Python

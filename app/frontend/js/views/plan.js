@@ -20,7 +20,7 @@
  * triggers discovery, capability refresh or engine execution.
  */
 
-import { api } from "../api.js";
+import { api, encodePathSegment } from "../api.js";
 import { registerView } from "../app.js";
 import {
   InlineError,
@@ -32,7 +32,7 @@ import {
   SimulatedOnlyBadge,
   StatusBadge,
 } from "../components.js";
-import { button, empty, h, kv, pending, render, text } from "../dom.js";
+import { button, empty, h, kv, pending, render, text, asArray } from "../dom.js";
 
 /**
  * The modes the form offers. The API accepts any string, but this screen only
@@ -46,12 +46,22 @@ let targetOptions = [];
 let formState = { target: "", mode: "simulated", reference: "" };
 let formSlot = null;
 let resultSlot = null;
+/**
+ * In-flight guard for the preview request, set synchronously before the first
+ * asynchronous boundary. Rapid clicks, keyboard activation and programmatic
+ * reuse of `submitPreview` collapse to one request. `disabled` on the submit
+ * button is a UI hint only; the gate lives here.
+ */
+let submittingPreview = false;
+/**
+ * Monotonic generation for the preview lifecycle. Every submission takes a
+ * fresh generation and applies its outcome only while it is still the newest
+ * one and the slot it started on still owns the screen, so a stale completion
+ * can never repaint a newly mounted view or a different target.
+ */
+let previewGeneration = 0;
 
 /* ---- helpers -------------------------------------------------------------- */
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
@@ -77,6 +87,20 @@ async function loadTargetOptions() {
   targetOptions = asArray(res.data && res.data.targets).filter(
     (t) => t !== null && typeof t === "object" && isNonEmptyString(t.target)
   );
+}
+
+/** Update the submit button's disabled attribute from `target` + in-flight state. */
+function updateSubmitDisabled() {
+  const disabled = !isNonEmptyString(formState.target) || submittingPreview;
+  const btn = formSlot ? formSlot.querySelector("#plan-submit") : null;
+  if (!btn) {
+    return;
+  }
+  if (disabled) {
+    btn.setAttribute("disabled", "");
+  } else {
+    btn.removeAttribute("disabled");
+  }
 }
 
 function renderForm() {
@@ -139,9 +163,8 @@ function renderForm() {
     submitPreview,
     "btn btn--primary"
   );
-  if (!isNonEmptyString(formState.target)) {
-    submit.setAttribute("disabled", "");
-  }
+  submit.setAttribute("id", "plan-submit");
+  updateSubmitDisabled();
 
   const grid = h("div", {
     class: "form-grid",
@@ -270,37 +293,72 @@ async function submitPreview() {
     ]);
     return;
   }
+  if (submittingPreview) {
+    // A request is already in flight: collapse repeated activation (rapid
+    // clicks, keyboard activation, programmatic reuse) into one.
+    return;
+  }
+  // Take the guard synchronously, before the first `await`: every caller in
+  // flight from the same task collapses here.
+  submittingPreview = true;
+  const generation = ++previewGeneration;
+  const slot = resultSlot;
+  updateSubmitDisabled();
+
   const payload = {
     mode: formState.mode || "simulated",
     reference: formState.reference || "",
   };
-  render(resultSlot, [pending("Requesting plan preview...")]);
+  render(slot, [pending("Requesting plan preview...")]);
 
-  const res = await api.post(`/api/targets/${target}/compatibility/plan`, payload);
-  if (!res.ok) {
-    render(resultSlot, [
-      InlineError(res.error),
-      RetryButton(submitPreview, "Retry preview"),
-      h("p", {
-        class: "panel__hint",
-        text: "The preview request failed before the policy could evaluate it.",
-      }),
-    ]);
-    return;
+  try {
+    const res = await api.post(
+      `/api/targets/${encodePathSegment(target)}/compatibility/plan`,
+      payload
+    );
+    if (generation !== previewGeneration || slot !== resultSlot) {
+      // A newer submission superseded this one, or the view navigated away:
+      // this response belongs to nobody, so it must not repaint anything.
+      return;
+    }
+    if (!res.ok) {
+      render(slot, [
+        InlineError(res.error),
+        RetryButton(submitPreview, "Retry preview"),
+        h("p", {
+          class: "panel__hint",
+          text: "The preview request failed before the policy could evaluate it.",
+        }),
+      ]);
+      return;
+    }
+    const preview = res.data;
+    if (preview === null || typeof preview !== "object") {
+      render(slot, [
+        empty("No preview returned", "The API answered without a usable preview body."),
+      ]);
+      return;
+    }
+    renderResult(preview);
+  } finally {
+    if (generation === previewGeneration) {
+      submittingPreview = false;
+      updateSubmitDisabled();
+    }
   }
-  const preview = res.data;
-  if (preview === null || typeof preview !== "object") {
-    render(resultSlot, [
-      empty("No preview returned", "The API answered without a usable preview body."),
-    ]);
-    return;
-  }
-  renderResult(preview);
 }
 
 /* ---- view ----------------------------------------------------------------- */
 
 async function renderPlan(root, params) {
+  // Reset the in-flight guard on entry: a request left pending across a
+  // navigation has detached its slot, and its `finally` can no longer affect
+  // this mount. Leaving the flag latched would disable the submit button for
+  // the whole session. Bumping the generation invalidates responses from
+  // the previous mount as well.
+  submittingPreview = false;
+  previewGeneration += 1;
+
   formSlot = h("div", { class: "section-body" });
   resultSlot = h("div", { class: "section-body" });
 

@@ -1,6 +1,6 @@
 """Phase 4B.1 - Dashboard view contract tests.
 
-These are *static and structural* assertions on ``frontend/js/views/dashboard.js``
+These are *static and structural* assertions on ``app/frontend/js/views/dashboard.js``
 plus its integration with the Phase 4A shell. No JavaScript runtime is available
 in this repository (Node is absent; the Python JS engines either reject ES
 modules or crash on Python 3.13), so this suite cannot execute the view. It

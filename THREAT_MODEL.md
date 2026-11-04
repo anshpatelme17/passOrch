@@ -11,7 +11,7 @@ what we protect, from whom, how, and what we deliberately do not claim.
 ## Scope and non-goals
 
 * **In scope**: the FastAPI application (`app/`), its SQLite persistence, the
-  bundled SPA (`frontend/`), request guards (rate limit, bearer auth, body
+  bundled SPA (`app/frontend/`), request guards (rate limit, bearer auth, body
   cap), and the Docker/Compose deployment artifacts.
 * **Out of scope / non-goals**: real password cracking of any kind (there is
   no execution path), multi-user authorization (single-operator tool),

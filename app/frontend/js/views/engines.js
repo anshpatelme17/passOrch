@@ -39,7 +39,7 @@ import {
   StatusBadge,
   SimulationNotice,
 } from "../components.js";
-import { empty, h, pending, render, table, text } from "../dom.js";
+import { empty, h, pending, render, table, text, asArray } from "../dom.js";
 
 /* ---- copy ---------------------------------------------------------------- */
 
@@ -62,10 +62,6 @@ const REFRESH_ERROR_HINTS = {
 };
 
 /* ---- helpers -------------------------------------------------------------- */
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 function isReport(entry) {
   return entry !== null && typeof entry === "object" && typeof entry.engine === "string" && entry.engine.length > 0;

@@ -4,19 +4,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
-import { showRoute } from "../frontend/js/app.js";
-import "../frontend/js/views/dashboard.js";
-import "../frontend/js/views/engines.js";
-import "../frontend/js/views/targets.js";
-import "../frontend/js/views/instances.js";
-import "../frontend/js/views/plan.js";
-import "../frontend/js/views/jobs.js";
+import { showRoute } from "../app/frontend/js/app.js";
+import "../app/frontend/js/views/dashboard.js";
+import "../app/frontend/js/views/engines.js";
+import "../app/frontend/js/views/targets.js";
+import "../app/frontend/js/views/instances.js";
+import "../app/frontend/js/views/plan.js";
+import "../app/frontend/js/views/jobs.js";
 import { byTag, flush, setup } from "./_fixtures.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // frontend-tests -> repo root
 const REPO_ROOT = dirname(HERE);
-const JS_ROOT = join(REPO_ROOT, "frontend", "js");
+const JS_ROOT = join(REPO_ROOT, "app", "frontend", "js");
 
 /** The Phase 2D read-only library, pinned by its own suite. */
 const LEGACY = "dashboard.js";
@@ -133,7 +133,7 @@ describe("safety - network boundary", () => {
       called = true;
       return { status: 200, ok: true, text: async () => "{}" };
     };
-    const { request } = await import("../frontend/js/api.js");
+    const { request } = await import("../app/frontend/js/api.js");
     const res = await request("http://evil.test/api/jobs");
     assert.equal(res.ok, false);
     assert.equal(res.error.kind, "invalid_request");
@@ -164,7 +164,7 @@ describe("safety - legacy library untouched", () => {
 
 describe("safety - simulation-only messaging", () => {
   it("the shell declares the notice", () => {
-    const html = readFileSync(join(REPO_ROOT, "frontend/index.html"), "utf8");
+    const html = readFileSync(join(REPO_ROOT, "app/frontend/index.html"), "utf8");
     assert.match(html, /Simulation only/);
     assert.match(html, /no engine is ever executed/);
   });
@@ -271,7 +271,7 @@ describe("safety - hostile data stays inert text", () => {
 
 describe("safety - module hygiene", () => {
   it("all view modules are registered and imported", async () => {
-    const { hasView } = await import("../frontend/js/app.js");
+    const { hasView } = await import("../app/frontend/js/app.js");
     for (const path of ["/dashboard", "/engines", "/targets", "/instances", "/plan", "/jobs"]) {
       assert.equal(hasView(path), true, path);
     }
@@ -310,6 +310,6 @@ describe("safety - module hygiene", () => {
         }
       }
     };
-    walk(join(REPO_ROOT, "frontend"));
+    walk(join(REPO_ROOT, "app", "frontend"));
   });
 });
