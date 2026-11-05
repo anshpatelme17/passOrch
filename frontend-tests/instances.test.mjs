@@ -6,6 +6,7 @@ import "../app/frontend/js/views/instances.js";
 import {
   CATALOG,
   FakeResponse,
+  assertLoneShellBanner,
   click,
   containing,
   flush,
@@ -454,7 +455,7 @@ describe("instances - edit", () => {
 });
 
 describe("instances - rendering and safety", () => {
-  it("keeps the simulation-only notice in every state", async () => {
+  it("leaves the shell's single simulation banner untouched in every state", async () => {
     for (const routes of [
       {},
       { "GET /api/target-instances": { status: 200, body: EMPTY } },
@@ -462,7 +463,13 @@ describe("instances - rendering and safety", () => {
       start(routes);
       showRoute("#/instances");
       await flush();
-      assert.match(root().textContent, /Simulation only/);
+      const banner = assertLoneShellBanner(globalThis.document);
+      assert.match(banner.textContent, /Simulation only/);
+      assert.doesNotMatch(
+        root().textContent,
+        /Simulation only/,
+        "the Instances view must not duplicate the shell banner"
+      );
     }
   });
 

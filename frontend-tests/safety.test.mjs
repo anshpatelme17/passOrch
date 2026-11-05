@@ -11,7 +11,7 @@ import "../app/frontend/js/views/targets.js";
 import "../app/frontend/js/views/instances.js";
 import "../app/frontend/js/views/plan.js";
 import "../app/frontend/js/views/jobs.js";
-import { byTag, flush, setup } from "./_fixtures.mjs";
+import { assertLoneShellBanner, byTag, flush, setup } from "./_fixtures.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // frontend-tests -> repo root
@@ -169,12 +169,17 @@ describe("safety - simulation-only messaging", () => {
     assert.match(html, /no engine is ever executed/);
   });
 
-  it("every implemented view restates it", async () => {
-    for (const path of ["/dashboard", "/targets", "/instances", "/plan", "/jobs"]) {
+  it("keeps exactly one simulation banner across every route", async () => {
+    for (const path of ["/dashboard", "/engines", "/targets", "/instances", "/plan", "/jobs"]) {
       showRoute("#" + path);
       await flush();
+      assertLoneShellBanner(globalThis.document);
       const text = globalThis.document.getElementById("view-root").textContent;
-      assert.match(text, /Simulation only/, `${path} must keep the notice`);
+      assert.doesNotMatch(
+        text,
+        /Simulation only/,
+        `${path} must not duplicate the shell's simulation banner`
+      );
     }
   });
 
@@ -202,8 +207,7 @@ describe("safety - no fabricated engine behavior", () => {
     const info = showRoute("#/engines");
     assert.equal(info.rendered, true);
     await flush();
-    const text = globalThis.document.getElementById("view-root").textContent;
-    assert.match(text, /Simulation only/);
+    assertLoneShellBanner(globalThis.document);
   });
 });
 

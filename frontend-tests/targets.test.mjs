@@ -4,7 +4,7 @@ import { describe, it, beforeEach } from "node:test";
 import { showRoute } from "../app/frontend/js/app.js";
 import "../app/frontend/js/views/targets.js";
 import "../app/frontend/js/views/jobs.js";
-import { FakeResponse, containing, flush, setup } from "./_fixtures.mjs";
+import { FakeResponse, assertLoneShellBanner, containing, flush, setup } from "./_fixtures.mjs";
 
 let env;
 
@@ -208,10 +208,16 @@ describe("targets - rendering", () => {
     assert.match(root().textContent, /office2007, office2010, office2013/);
   });
 
-  it("keeps the simulation-only notice", async () => {
+  it("leaves the shell's single simulation banner untouched", async () => {
     showRoute("#/targets");
     await flush();
-    assert.match(root().textContent, /Simulation only/);
+    const banner = assertLoneShellBanner(globalThis.document);
+    assert.match(banner.textContent, /Simulation only/);
+    assert.doesNotMatch(
+      root().textContent,
+      /Simulation only/,
+      "the Targets view must not duplicate the shell banner"
+    );
   });
 
   it("states that no engine is executed", async () => {

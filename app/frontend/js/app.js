@@ -14,7 +14,6 @@
  */
 
 import { api } from "./api.js";
-import { SimulationNotice } from "./components.js";
 import { clear, errorState, placeholder, render } from "./dom.js";
 
 const VIEW_ROOT_ID = "view-root";
@@ -136,7 +135,6 @@ export function showRoute(hash) {
   const view = getView(path);
   if (!view) {
     render(root, [
-      SimulationNotice(),
       placeholder(
         `${titleFor(path)} is not implemented yet`,
         "This screen has no data yet. It will show live results from the PassOrch API once implemented - nothing is simulated on screen."
@@ -149,7 +147,7 @@ export function showRoute(hash) {
   try {
     view.render(root, params);
   } catch (err) {
-    render(root, [SimulationNotice(), errorState(err)]);
+    render(root, [errorState(err)]);
   }
   return { path, params, requested, rendered: true };
 }

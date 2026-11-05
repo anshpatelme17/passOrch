@@ -9,6 +9,7 @@
  * Response bodies are expressed as JS objects and serialized by the fixture,
  * exactly as the backend would.
  */
+import assert from "node:assert/strict";
 
 /** A stand-in for the WHATWG `Response` used by `js/api.js`. */
 export class FakeResponse {
@@ -450,16 +451,50 @@ export function flush(times = 8) {
 }
 
 /**
+ * Exactly one simulation warning may exist anywhere in the document:
+ * the persistent shell banner. Views must never render their own copies.
+ */
+export function assertLoneShellBanner(doc) {
+  const notices = doc.querySelectorAll(".simulation-notice");
+  assert.equal(
+    notices.length,
+    1,
+    `expected exactly one persistent simulation banner, found ${notices.length}`
+  );
+  return notices[0];
+}
+
+/**
+ * Build the application header exactly as `app/frontend/index.html` declares
+ * the persistent simulation-only banner, so the suite can prove the view
+ * never overrides or duplicates it.
+ */
+export function installShell(doc) {
+  const header = doc.createElement("header");
+  header.setAttribute("class", "app-header");
+  const notice = doc.createElement("p");
+  notice.setAttribute("id", "simulation-notice");
+  notice.setAttribute("class", "simulation-notice");
+  notice.setAttribute("role", "status");
+  notice.textContent = "Simulation only — no engine is ever executed.";
+  header.appendChild(notice);
+  doc._registerRoot(header);
+  return { header, notice };
+}
+
+/**
  * Install a DOM + fetch environment in one call and return a typed handle.
  * Intended for use inside `beforeEach`.
  */
 export function setup(routes) {
   const env = installDom();
   const net = installFetch(routes);
+  const shell = installShell(env.document);
   return {
     ...env,
     ...net,
     nav: installNav(env.document),
+    shell,
     /** Navigate through the real hashchange path and let views settle. */
     async go(hash, flushes = 6) {
       env.fireHashChange(hash);

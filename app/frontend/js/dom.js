@@ -72,6 +72,38 @@ export function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+/**
+ * Format an epoch-second timestamp for display.
+ *
+ * Returns a localised date and time, or "-" when the value is missing or not
+ * a finite epoch second. Never throws, so an unexpected clock can never take
+ * the whole view down.
+ */
+export function formatTimestamp(value) {
+  if (typeof value === "boolean" || value === null || value === undefined) {
+    return "-";
+  }
+  if (typeof value !== "number" && typeof value !== "string") {
+    return "-";
+  }
+  if (typeof value === "string" && value.trim() === "") {
+    return "-";
+  }
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || !Number.isInteger(seconds)) {
+    return "-";
+  }
+  const date = new Date(seconds * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  try {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 16).replace("T", " ");
+  }
+}
+
 /** Wrap an untrusted value in a text node. */
 export function text(value) {
   return document.createTextNode(value === undefined || value === null ? "" : String(value));
@@ -103,11 +135,11 @@ export function render(node, children) {
 
 /* ---- elements ----------------------------------------------------------- */
 
-export function table(headers, rows) {
+export function table(headers, rows, caption) {
   const thead = h("thead", {});
   const headRow = h("tr", {});
   for (const label of headers) {
-    headRow.appendChild(h("th", { text: label }));
+    headRow.appendChild(h("th", { text: label, attrs: [["scope", "col"]] }));
   }
   thead.appendChild(headRow);
 
@@ -124,7 +156,16 @@ export function table(headers, rows) {
     tbody.appendChild(tr);
   }
 
-  return h("div", { class: "table-wrap", children: [h("table", { class: "data", children: [thead, tbody] })] });
+  const tableEl = h("table", { class: "data" });
+  // A caption is optional so existing callers keep the same compact markup.
+  // When supplied it is the table's accessible name as well as visible context.
+  if (typeof caption === "string" && caption.length > 0) {
+    tableEl.appendChild(h("caption", { text: caption }));
+  }
+  tableEl.appendChild(thead);
+  tableEl.appendChild(tbody);
+
+  return h("div", { class: "table-wrap", children: [tableEl] });
 }
 
 export function badge(value, tone) {

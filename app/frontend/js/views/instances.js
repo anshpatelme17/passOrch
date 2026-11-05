@@ -39,12 +39,13 @@ import { registerView } from "../app.js";
 import {
   InlineError,
   NavLink,
+  PageHead,
   Panel,
   RetryButton,
   SAFE_FAILURE_MESSAGE,
-  SimulationNotice,
+  StatRow,
 } from "../components.js";
-import { badge, button, empty, h, pending, render, table, text, asArray } from "../dom.js";
+import { badge, button, empty, h, pending, render, table, text, asArray, formatTimestamp } from "../dom.js";
 
 /* ---- limits mirrored from app/engines/target_instances.py ----------------- */
 
@@ -144,7 +145,7 @@ function renderFeedback(kind, message) {
   }
   render(feedbackSlot, [
     h("div", {
-      class: "state",
+      class: "state state--ok",
       attrs: [["role", "status"]],
       children: [h("p", { class: "state__title", text: message })],
     }),
@@ -294,26 +295,44 @@ async function renderList() {
   const currentPage = Math.floor(paginationState.offset / paginationState.limit) + 1;
   const totalPages = Math.max(1, Math.ceil(total / paginationState.limit));
 
+  const previous = button("Previous", () => {
+    if (paginationState.offset > 0) {
+      paginationState.offset = Math.max(0, paginationState.offset - paginationState.limit);
+      renderList();
+    }
+  }, "btn");
+  if (paginationState.offset === 0) {
+    previous.setAttribute("disabled", "");
+  }
+
+  const next = button("Next", () => {
+    if (paginationState.offset + paginationState.limit < total) {
+      paginationState.offset = paginationState.offset + paginationState.limit;
+      renderList();
+    }
+  }, "btn");
+  if (paginationState.offset + paginationState.limit >= total) {
+    next.setAttribute("disabled", "");
+  }
+
   const paginationControls = h("div", {
     class: "pagination",
     children: [
-      button("Previous", () => {
-        if (paginationState.offset > 0) {
-          paginationState.offset = Math.max(0, paginationState.offset - paginationState.limit);
-          renderList();
-        }
-      }, "btn"),
+      previous,
       h("span", { class: "pagination__info", text: `Page ${currentPage} of ${totalPages} (${total} total)` }),
-      button("Next", () => {
-        if (paginationState.offset + paginationState.limit < total) {
-          paginationState.offset = paginationState.offset + paginationState.limit;
-          renderList();
-        }
-      }, "btn"),
+      next,
     ],
   });
 
   render(listSlot, [
+    StatRow(
+      [
+        ["Matching instances", total, undefined],
+        ["On this page", instances.length, undefined],
+        ["Page", `${currentPage} of ${totalPages}`, undefined],
+      ],
+      "Target instance list summary"
+    ),
     table(
       ["Name", "Id", "Target type", "Description", "Created", "Actions"],
       instances.map((inst) => [
@@ -321,15 +340,16 @@ async function renderList() {
         h("code", { text: inst.id }),
         badge(inst.target_type || "", "muted"),
         text(inst.description || "-"),
-        typeof inst.created_at === "number" ? String(inst.created_at) : "-",
+        formatTimestamp(inst.created_at),
         h("div", {
-          class: "actions",
+          class: "table-actions",
           children: [
             button("Edit", () => renderEditForm(inst)),
-            button("Delete", () => confirmAndDelete(inst)),
+            button("Delete", () => confirmAndDelete(inst), "btn btn--danger"),
           ],
         }),
-      ])
+      ]),
+      "Target instances recorded on this page"
     ),
     h("p", { class: "panel__hint", text: `${total} target instance(s) defined.` }),
     paginationControls,
@@ -547,7 +567,8 @@ function confirmAndDelete(instance) {
   const label = isNonEmptyString(instance.name) ? instance.name : instance.id;
   render(slot, [
     h("div", {
-      class: "state state--error",
+      class: "state state--danger",
+      attrs: [["role", "alert"]],
       children: [
         h("p", {
           class: "state__title",
@@ -691,10 +712,10 @@ function renderEditForm(instance, errorMessage) {
   }, "btn btn--primary");
 
   render(slot, [
-    h("div", {
-      class: "state",
+    h("section", {
+      class: "panel panel--inset",
       children: [
-        h("p", { class: "state__title", text: `Edit target instance "${label}"` }),
+        h("h3", { class: "panel__title", text: `Edit target instance "${label}"` }),
         h("p", {
           class: "panel__hint",
           text: "Only the name and description can be changed. The target type, id and creation time are immutable.",
@@ -797,32 +818,51 @@ async function renderInstances(root) {
   };
 
   render(root, [
-    SimulationNotice(),
-    Panel(
-      "Target instances",
-      [
-        h("div", { class: "section-body" }),
-        h("p", {
-          class: "panel__hint",
-          text:
-            "A target instance is a named thing to audit. Simulated jobs can be associated with one, and the association is a snapshot taken when the job is created.",
+    PageHead(
+      "Instances",
+      "A target instance is a named thing to audit. Simulated jobs can be associated with one, and the association is snapshotted when the job is created.",
+      [NavLink("Back to Dashboard", "/dashboard"), NavLink("Open Jobs", "/jobs")]
+    ),
+    h("div", {
+      class: "split",
+      children: [
+        h("div", {
+          class: "split__main",
+          children: [
+            Panel(
+              "Target instances",
+              [
+                h("p", {
+                  class: "panel__hint",
+                  text:
+                    "Creating, editing or deleting a target instance does not run anything. No engine binary is invoked, no attack is performed, and no capability data is probed from the browser.",
+                }),
+                filterSlot,
+                listSlot,
+              ],
+              "Create, edit, inspect and remove target instances."
+            ),
+          ],
         }),
-        filterSlot,
-        listSlot,
+        h("div", {
+          class: "split__side",
+          children: [
+            Panel("Create a target instance", [feedbackSlot, formSlot], "Nothing runs until a simulated job references it."),
+            Panel(
+              "How instances are used",
+              [
+                h("p", {
+                  class: "panel__hint",
+                  text:
+                    "The target type is immutable after creation. Editing changes only the display name and description; jobs already recorded keep their original association snapshot.",
+                }),
+              ],
+              undefined
+            ),
+          ],
+        }),
       ],
-      "Create, edit, inspect and remove target instances."
-    ),
-    Panel("Create a target instance", [h("div", { class: "section-body" }), feedbackSlot, formSlot]),
-    Panel(
-      "Simulation only",
-      [
-        h("p", {
-          class: "panel__hint",
-          text:
-            "Creating, editing or deleting a target instance does not run anything. No engine binary is invoked, no attack is performed, and no capability data is probed from the browser.",
-        }),
-      ]
-    ),
+    }),
   ]);
 
   // Load the type options first so the form can render a populated picker, then
@@ -839,7 +879,7 @@ export const InstancesView = registerView("/instances", {
   title: "Instances",
   render: (root) => {
     renderInstances(root).catch((err) => {
-      render(root, [SimulationNotice(), InlineError(err)]);
+      render(root, [InlineError(err)]);
     });
   },
 });

@@ -25,10 +25,10 @@ import { registerView } from "../app.js";
 import {
   InlineError,
   NavLink,
+  PageHead,
   Panel,
   PlanPreviewView,
   RetryButton,
-  SimulationNotice,
   SimulatedOnlyBadge,
   StatusBadge,
 } from "../components.js";
@@ -111,7 +111,12 @@ function renderForm() {
 
   const targetSelect = h("select", {
     class: "field__control",
-    attrs: [["id", "plan-target"], ["name", "target"], ["required", ""]],
+    attrs: [
+      ["id", "plan-target"],
+      ["name", "target"],
+      ["required", ""],
+      ["aria-describedby", "plan-target-help"],
+    ],
     onChange: (event) => {
       // Re-render so the submit button enables once a target is chosen - the
       // same pattern the jobs form uses (the disabled attribute is set at
@@ -137,7 +142,11 @@ function renderForm() {
 
   const modeSelect = h("select", {
     class: "field__control",
-    attrs: [["id", "plan-mode"], ["name", "mode"]],
+    attrs: [
+      ["id", "plan-mode"],
+      ["name", "mode"],
+      ["aria-describedby", "plan-mode-help"],
+    ],
     onChange: (event) => {
       formState.mode = event.target.value;
     },
@@ -151,7 +160,12 @@ function renderForm() {
 
   const referenceInput = h("input", {
     class: "field__control",
-    attrs: [["id", "plan-reference"], ["name", "reference"], ["maxlength", "256"]],
+    attrs: [
+      ["id", "plan-reference"],
+      ["name", "reference"],
+      ["maxlength", "256"],
+      ["aria-describedby", "plan-reference-help"],
+    ],
   });
   referenceInput.value = formState.reference || "";
   referenceInput.addEventListener("input", (event) => {
@@ -180,6 +194,7 @@ function renderForm() {
           targetSelect,
           h("p", {
             class: "field__help",
+            attrs: [["id", "plan-target-help"]],
             text:
               options.length === 0
                 ? "No target types are available yet."
@@ -194,6 +209,7 @@ function renderForm() {
           modeSelect,
           h("p", {
             class: "field__help",
+            attrs: [["id", "plan-mode-help"]],
             text: "Only the simulation mode is offered - no other mode can be authorised.",
           }),
         ],
@@ -207,7 +223,11 @@ function renderForm() {
             attrs: [["for", "plan-reference"]],
           }),
           referenceInput,
-          h("p", { class: "field__help", text: "A label recorded with the request, if you want one." }),
+          h("p", {
+            class: "field__help",
+            attrs: [["id", "plan-reference-help"]],
+            text: "A label recorded with the request, if you want one.",
+          }),
         ],
       }),
       h("div", {
@@ -224,7 +244,6 @@ function renderForm() {
 
 function renderResult(preview) {
   render(resultSlot, [
-    h("div", { class: "section-body" }),
     // Branch on the body, never on response.ok: a denial is HTTP 200.
     preview.authorization &&
     preview.authorization.authorized === true ? (
@@ -238,7 +257,7 @@ function renderResult(preview) {
 
 function authorizedSummary(preview) {
   return h("div", {
-    class: "state",
+    class: "state state--ok",
     attrs: [["role", "status"]],
     children: [
       h("p", {
@@ -268,7 +287,7 @@ function deniedSummary(preview) {
     rows.push(["detail", text(auth.detail)]);
   }
   return h("div", {
-    class: "state state--error",
+    class: "state state--danger",
     attrs: [["role", "alert"]],
     children: [
       h("p", { class: "state__title", text: "Denied - no simulation was produced." }),
@@ -369,11 +388,19 @@ async function renderPlan(root, params) {
   };
 
   render(root, [
-    SimulationNotice(),
+    PageHead(
+      "Plan Preview",
+      "Request a simulated plan preview for one target type. The policy decides whether a simulation is authorised; a denial is a normal recorded outcome, never a network failure.",
+      [NavLink("Back to Targets", "/targets")]
+    ),
     Panel(
       "Compatibility plan preview",
       [
-        h("div", { class: "section-body" }),
+        h("p", {
+          class: "panel__hint",
+          text:
+            "Nothing is ever executed. Authorised previews return a plan and a simulated result; denied previews return the policy reason with no plan.",
+        }),
         formSlot,
         resultSlot,
       ],
@@ -408,7 +435,7 @@ export const PlanView = registerView("/plan", {
   title: "Plan Preview",
   render: (root, params) => {
     renderPlan(root, params || {}).catch((err) => {
-      render(root, [SimulationNotice(), InlineError(err)]);
+      render(root, [InlineError(err)]);
     });
   },
 });

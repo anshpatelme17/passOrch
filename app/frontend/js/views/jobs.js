@@ -42,17 +42,19 @@
 import { api } from "../api.js";
 import { registerView } from "../app.js";
 import {
+  Callout,
   InlineError,
   JobDetailView,
   NavLink,
+  PageHead,
   Panel,
   RetryButton,
   SAFE_FAILURE_MESSAGE,
+  StatRow,
   StatusBadge,
   SimulatedOnlyBadge,
-  SimulationNotice,
 } from "../components.js";
-import { button, downloadBlob, empty, h, kv, pending, render, table, text, asArray } from "../dom.js";
+import { button, downloadBlob, empty, h, kv, pending, render, table, text, asArray, formatTimestamp } from "../dom.js";
 
 /* ---- module state --------------------------------------------------------- */
 
@@ -184,52 +186,58 @@ function renderFilters() {
 
   render(filterSlot, [
     h("div", {
-      class: "filters",
+      class: "toolbar",
       children: [
-        filterSelect(
-          "jobs-filter-status",
-          "Status",
-          paginationState.statusFilter,
-          statusOptions,
-          (event) => {
-            paginationState.statusFilter = event.target.value;
-            paginationState.offset = 0;
-            renderList();
-          }
-        ),
-        filterSelect(
-          "jobs-filter-target",
-          "Target",
-          paginationState.targetFilter,
-          targetOptions,
-          (event) => {
-            paginationState.targetFilter = event.target.value;
-            paginationState.offset = 0;
-            renderList();
-          }
-        ),
-        filterSelect(
-          "jobs-filter-instance",
-          "Instance",
-          paginationState.instanceFilter,
-          instanceOptions,
-          (event) => {
-            paginationState.instanceFilter = event.target.value;
-            paginationState.offset = 0;
-            renderList();
-          }
-        ),
-        filterSelect(
-          "jobs-filter-sort",
-          "Sort",
-          paginationState.sort,
-          sortOptions,
-          (event) => {
-            paginationState.sort = event.target.value || "created_desc";
-            paginationState.offset = 0;
-            renderList();
-          }
-        ),
+        h("p", { class: "toolbar__title", text: "Filter and sort" }),
+        h("div", {
+          class: "filters",
+          children: [
+            filterSelect(
+              "jobs-filter-status",
+              "Status",
+              paginationState.statusFilter,
+              statusOptions,
+              (event) => {
+                paginationState.statusFilter = event.target.value;
+                paginationState.offset = 0;
+                renderList();
+              }
+            ),
+            filterSelect(
+              "jobs-filter-target",
+              "Target",
+              paginationState.targetFilter,
+              targetOptions,
+              (event) => {
+                paginationState.targetFilter = event.target.value;
+                paginationState.offset = 0;
+                renderList();
+              }
+            ),
+            filterSelect(
+              "jobs-filter-instance",
+              "Instance",
+              paginationState.instanceFilter,
+              instanceOptions,
+              (event) => {
+                paginationState.instanceFilter = event.target.value;
+                paginationState.offset = 0;
+                renderList();
+              }
+            ),
+            filterSelect(
+              "jobs-filter-sort",
+              "Sort",
+              paginationState.sort,
+              sortOptions,
+              (event) => {
+                paginationState.sort = event.target.value || "created_desc";
+                paginationState.offset = 0;
+                renderList();
+              }
+            ),
+          ],
+        }),
       ],
     }),
   ]);
@@ -567,38 +575,58 @@ async function renderList() {
   const currentPage = Math.floor(paginationState.offset / paginationState.limit) + 1;
   const totalPages = Math.max(1, Math.ceil(total / paginationState.limit));
 
+  const previous = button("Previous", () => {
+    if (paginationState.offset > 0) {
+      paginationState.offset = Math.max(0, paginationState.offset - paginationState.limit);
+      renderList();
+    }
+  }, "btn");
+  if (paginationState.offset === 0) {
+    previous.setAttribute("disabled", "");
+  }
+
+  const next = button("Next", () => {
+    if (paginationState.offset + paginationState.limit < total) {
+      paginationState.offset = paginationState.offset + paginationState.limit;
+      renderList();
+    }
+  }, "btn");
+  if (paginationState.offset + paginationState.limit >= total) {
+    next.setAttribute("disabled", "");
+  }
+
   const paginationControls = h("div", {
     class: "pagination",
     children: [
-      button("Previous", () => {
-        if (paginationState.offset > 0) {
-          paginationState.offset = Math.max(0, paginationState.offset - paginationState.limit);
-          renderList();
-        }
-      }, "btn"),
+      previous,
       h("span", { class: "pagination__info", text: `Page ${currentPage} of ${totalPages} (${total} total)` }),
-      button("Next", () => {
-        if (paginationState.offset + paginationState.limit < total) {
-          paginationState.offset = paginationState.offset + paginationState.limit;
-          renderList();
-        }
-      }, "btn"),
+      next,
     ],
   });
 
   // JobSummary only: `instance_id`, `failure_reason` and `preview` are
   // JobInfo-only and are deliberately NOT read from list rows.
   render(slot, [
+    StatRow(
+      [
+        ["Matching jobs", total, undefined],
+        ["On this page", jobs.length, undefined],
+        ["Page", `${currentPage} of ${totalPages}`, undefined],
+        ["Sort", paginationState.sort === "created_asc" ? "Oldest first" : "Newest first", undefined],
+      ],
+      "Job list summary"
+    ),
     table(
-      ["Job", "Status", "Target", "Created", "", ""],
+      ["Job", "Status", "Target", "Created", "Details", "Delete"],
       jobs.map((job) => [
         h("code", { text: job.job_id }),
         StatusBadge(job.status || ""),
         text(job.target || "-"),
-        job.created_at === undefined ? "-" : String(job.created_at),
+        formatTimestamp(job.created_at),
         button("Details", () => renderDetail(job.job_id)),
-        button("Delete", () => confirmAndDeleteJob(job)),
-      ])
+        button("Delete", () => confirmAndDeleteJob(job), "btn btn--danger"),
+      ]),
+      "Recorded simulated jobs"
     ),
     h("p", { class: "panel__hint", text: `${total} recorded job(s), latest first.` }),
     paginationControls,
@@ -639,21 +667,36 @@ async function renderDetail(jobId) {
   // A fresh status slot per render: the export controls never carry a stale
   // "downloaded"/error message over to a different job's detail.
   exportStatusSlot = h("div", { class: "section-body" });
+  const note =
+    job.status === "simulated"
+      ? "This job recorded a simulation result. No engine was executed."
+      : job.status === "denied"
+        ? "This job was denied by the execution policy. No engine was executed."
+        : "This job failed before a simulation result was recorded. No engine was executed.";
+  const noteTitle =
+    job.status === "simulated"
+      ? "Simulated outcome recorded"
+      : job.status === "denied"
+        ? "Denied by the execution policy"
+        : "Failed outcome recorded";
+  const noteTone = job.status === "simulated" ? "ok" : job.status === "denied" ? "deny" : "warn";
   render(detailSlot, [
-    h("div", { class: "section-body" }),
-    SimulatedOnlyBadge(),
-    JobDetailView(job),
-    h("p", {
-      class: "panel__hint",
-      text:
-        job.status === "simulated"
-          ? "This job recorded a simulation result. No engine was executed."
-          : "This job was denied by the execution policy. No engine was executed.",
-    }),
     h("div", {
-      class: "actions",
+      class: "detail-head",
       children: [
-        button("Export JSON", () => processExport(jobId)),
+        SimulatedOnlyBadge(),
+        h("p", { class: "panel__hint", text: `Recorded ${formatTimestamp(job.created_at)}` }),
+      ],
+    }),
+    JobDetailView(job),
+    Callout(noteTone, noteTitle, note, "status"),
+    h("div", {
+      class: "toolbar",
+      children: [
+        h("div", {
+          class: "toolbar__group",
+          children: [button("Export JSON", () => processExport(jobId))],
+        }),
         exportStatusSlot,
       ],
     }),
@@ -831,24 +874,30 @@ async function renderJobs(root) {
   };
 
   render(root, [
-    SimulationNotice(),
+    PageHead(
+      "Jobs",
+      "Create and inspect recorded simulated jobs. A denied job is a recorded outcome, not a request failure.",
+      [NavLink("Plan Preview", "/plan"), NavLink("Instances", "/instances")]
+    ),
     Panel(
       "Create a simulated job",
-      [h("div", { class: "section-body" }), formSlot, formResultSlot],
+      [formSlot, formResultSlot],
       "Each job records what the policy authorised - and only ever a simulation."
     ),
-    Panel("Jobs", [filterSlot, listSlot], "Latest first. Details are loaded per job."),
-    Panel("Job details", detailSlot),
     Panel(
-      "Simulation only",
+      "Jobs",
       [
+        filterSlot,
+        listSlot,
         h("p", {
           class: "panel__hint",
           text:
-            "A denied job is a recorded outcome, not an error: it means the policy refused to authorise a simulation. No engine binary is ever invoked, no attack is performed, and no progress, worker or engine output exists to show.",
+            "A denied job is a recorded outcome, not an error: the policy refused to authorise a simulation. No engine binary is ever invoked, no attack is performed, and no progress, worker or engine output exists to show.",
         }),
-      ]
+      ],
+      "Latest first. Details are loaded per job."
     ),
+    Panel("Job details", detailSlot),
   ]);
 
   await Promise.all([loadTargetOptions(), loadInstanceOptions()]);
@@ -866,7 +915,7 @@ export const JobsView = registerView("/jobs", {
   title: "Jobs",
   render: (root) => {
     renderJobs(root).catch((err) => {
-      render(root, [SimulationNotice(), InlineError(err)]);
+      render(root, [InlineError(err)]);
     });
   },
 });

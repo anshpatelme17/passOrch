@@ -5,6 +5,7 @@ import { showRoute } from "../app/frontend/js/app.js";
 import "../app/frontend/js/views/plan.js";
 import {
   FakeResponse,
+  assertLoneShellBanner,
   byTag,
   click,
   containing,
@@ -308,12 +309,18 @@ describe("plan - navigation and messaging", () => {
     assert.ok(root().querySelectorAll("a").some((a) => a.getAttribute("href") === "#/targets"));
   });
 
-  it("keeps the simulation-only notice", async () => {
+  it("leaves the shell's single simulation banner untouched", async () => {
     for (const plan of [AUTHORIZED_PLAN, deniedPlan()]) {
       start(plan);
       showRoute("#/plan?target=pdf-document");
       await flush();
-      assert.match(rootText(root()), /Simulation only/);
+      const banner = assertLoneShellBanner(globalThis.document);
+      assert.match(banner.textContent, /Simulation only/);
+      assert.doesNotMatch(
+        rootText(root()),
+        /Simulation only/,
+        "the Plan view must not duplicate the shell banner"
+      );
     }
   });
 
@@ -467,7 +474,7 @@ describe("plan - target path encoding", () => {
     });
     assert.equal(shown.path, "/plan");
     await flush();
-    assert.match(root().textContent, /Simulation only/);
+    assert.match(assertLoneShellBanner(globalThis.document).textContent, /Simulation only/);
   });
 });
 

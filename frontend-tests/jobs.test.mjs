@@ -5,6 +5,7 @@ import { showRoute } from "../app/frontend/js/app.js";
 import "../app/frontend/js/views/jobs.js";
 import {
   FakeResponse,
+  assertLoneShellBanner,
   click,
   containing,
   deniedJob,
@@ -626,12 +627,18 @@ describe("jobs - export", () => {
 });
 
 describe("jobs - messaging and safety", () => {
-  it("keeps the simulation-only notice in every state", async () => {
+  it("leaves the shell's single simulation banner untouched in every state", async () => {
     for (const routes of [{}, { "GET /api/jobs": { status: 200, body: EMPTY_LIST } }]) {
       start(routes);
       showRoute("#/jobs");
       await flush();
-      assert.match(rootText(root()), /Simulation only/);
+      const banner = assertLoneShellBanner(globalThis.document);
+      assert.match(banner.textContent, /Simulation only/);
+      assert.doesNotMatch(
+        rootText(root()),
+        /Simulation only/,
+        "the Jobs view must not duplicate the shell banner"
+      );
     }
   });
 

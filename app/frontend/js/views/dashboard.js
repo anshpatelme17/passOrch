@@ -30,11 +30,10 @@ import {
   Panel,
   RetryButton,
   SAFE_FAILURE_MESSAGE,
-  SimulationNotice,
   SimulatedOnlyBadge,
   StatusBadge,
 } from "../components.js";
-import { empty, h, kv, pending, render, table, text, asArray } from "../dom.js";
+import { empty, h, kv, pending, render, table, text, asArray, formatTimestamp } from "../dom.js";
 
 /* ---- section: health ------------------------------------------------------ */
 
@@ -118,8 +117,9 @@ async function jobsSection(slot) {
         CodeOrDash(job.job_id),
         StatusBadge(job.status || ""),
         text(job.target || "-"),
-        job.created_at === undefined ? "-" : String(job.created_at),
-      ])
+        formatTimestamp(job.created_at),
+      ]),
+      "Recent simulated jobs"
     ),
     h("p", {
       class: "panel__hint",
@@ -159,7 +159,8 @@ async function instancesSection(slot) {
         CodeOrDash(inst.id),
         StatusBadge(inst.target_type || ""),
         text(inst.description || "-"),
-      ])
+      ]),
+      "Target instances"
     ),
     h("p", {
       class: "panel__hint",
@@ -167,6 +168,18 @@ async function instancesSection(slot) {
     }),
     NavLink("Go to Instances", "/instances"),
   ]);
+}
+
+/** A compact statistic card used by the top summary row. */
+function statCard(label, value, tone) {
+  const valueEl = h("p", { class: "stat__value", text: String(value) });
+  if (tone) {
+    valueEl.setAttribute("data-tone", tone);
+  }
+  return h("div", { class: "stat", children: [
+    h("p", { class: "stat__label", text: label }),
+    valueEl,
+  ] });
 }
 
 /* ---- section: statistics --------------------------------------------------- */
@@ -179,18 +192,17 @@ async function statisticsSection(slot) {
     return;
   }
   const data = res.data || {};
-  render(slot, [
-    kv([
-      ["total", CodeOrDash(data.total ?? 0)],
-      ["simulated", CodeOrDash(data.simulated ?? 0)],
-      ["denied", CodeOrDash(data.denied ?? 0)],
-      ["failed", CodeOrDash(data.failed ?? 0)],
-    ]),
-    h("p", {
-      class: "panel__hint",
-      text: "Read-only aggregation over the recorded jobs. No engine was executed.",
-    }),
-  ]);
+  const stats = [
+    ["Total jobs", data.total ?? 0, undefined],
+    ["Simulated", data.simulated ?? 0, "ok"],
+    ["Denied", data.denied ?? 0, "deny"],
+    ["Failed", data.failed ?? 0, "deny"],
+  ];
+  render(slot, h("div", {
+    class: "stat-row",
+    attrs: [["role", "status"], ["aria-label", "Job statistics"]],
+    children: stats.map(([label, value, tone]) => statCard(label, value, tone)),
+  }));
 }
 
 /* ---- view ----------------------------------------------------------------- */
@@ -200,41 +212,36 @@ async function statisticsSection(slot) {
  * @param {HTMLElement} root  the shared #view-root
  */
 function renderDashboard(root) {
-  // Build every section shell first, so all four panels exist while their data
-  // is still in flight. Each slot is then filled independently.
+  // Build every section shell first, so all slots exist while their data is
+  // in flight. Each slot is then filled independently. The grid puts the
+  // workload (jobs, instances) in the main column and the system panels
+  // (health, engines) in the side column.
   const healthSlot = h("div", { class: "section-body" });
   const enginesSlot = h("div", { class: "section-body" });
   const jobsSlot = h("div", { class: "section-body" });
   const instancesSlot = h("div", { class: "section-body" });
-  const statsSlot = h("div", { class: "section-body" });
+  const statsSlot = h("div", { class: "stat-slot" });
 
   render(root, [
-    SimulationNotice(),
-    Panel(
-      "Dashboard",
-      [
-        h("p", {
-          class: "panel__hint",
-          text:
-            "Overview of the simulated PassOrch platform. Each section loads independently and can be retried on its own.",
-        }),
-      ]
-    ),
-    Panel("Application health", healthSlot),
-    Panel("Engines", enginesSlot, "Capability state as currently held by the server."),
-    Panel("Job statistics", statsSlot, "Aggregated counts over all recorded jobs."),
-    Panel("Recent jobs", jobsSlot, "Up to the five most recent simulated jobs."),
-    Panel("Target instances", instancesSlot, "Individual targets available for association."),
-    Panel(
-      "Simulation only",
-      [
-        h("p", {
-          class: "panel__hint",
-          text:
-            "Every plan preview and job on this platform is a simulation. No engine binary is invoked, no attack is performed, and no capability data is probed from the browser.",
-        }),
-      ]
-    ),
+    h("header", { class: "page-head", children: [
+      h("h2", { class: "page-head__title", text: "Dashboard" }),
+      h("p", {
+        class: "page-head__hint",
+        text:
+          "Overview of simulated audits. Counts update as jobs complete; every section loads on its own and can be retried independently.",
+      }),
+    ] }),
+    Panel("Job statistics", statsSlot, "Read-only aggregation over the recorded jobs. No engine was executed."),
+    h("div", { class: "dashboard-grid", children: [
+      h("div", { class: "dashboard-main", children: [
+        Panel("Recent jobs", jobsSlot, "Up to the five most recent simulated jobs."),
+        Panel("Target instances", instancesSlot, "Individual targets available for association."),
+      ] }),
+      h("div", { class: "dashboard-side", children: [
+        Panel("Application health", healthSlot, "Unauthenticated readiness probe."),
+        Panel("Engines", enginesSlot, "Capability state as currently held by the server."),
+      ] }),
+    ] }),
   ]);
 
   // Each section owns its request; none awaits the others, so a slow or failed

@@ -3,7 +3,8 @@ import { describe, it, beforeEach } from "node:test";
 
 import { showRoute } from "../app/frontend/js/app.js";
 import "../app/frontend/js/views/dashboard.js";
-import { FakeResponse, containing, flush, setup } from "./_fixtures.mjs";
+import { formatTimestamp } from "../app/frontend/js/dom.js";
+import { FakeResponse, assertLoneShellBanner, containing, flush, setup } from "./_fixtures.mjs";
 
 const HEALTH = { status: "ok", mode: "simulated" };
 const ENGINES = {
@@ -92,10 +93,58 @@ describe("dashboard - happy path", () => {
     }
   });
 
-  it("keeps the simulation-only notice visible", async () => {
+  it("keeps exactly one simulation-only notice, owned by the shell", async () => {
     showRoute("#/dashboard");
     await flush();
-    assert.match(root().textContent, /Simulation only/);
+    const banner = assertLoneShellBanner(globalThis.document);
+    assert.equal(banner.getAttribute("id"), "simulation-notice");
+    assert.match(banner.textContent, /Simulation only/);
+    assert.doesNotMatch(
+      root().textContent,
+      /Simulation only/,
+      "the dashboard must not duplicate the shell banner"
+    );
+  });
+
+  it("renders four statistic cards from GET /api/jobs/stats", async () => {
+    showRoute("#/dashboard");
+    await flush();
+    const cards = root().querySelectorAll(".stat");
+    assert.equal(cards.length, 4, "the summary row must contain four cards");
+    const rendered = Object.fromEntries(
+      cards.map((card) => [
+        card.querySelector(".stat__label").textContent,
+        card.querySelector(".stat__value").textContent,
+      ])
+    );
+    assert.deepEqual(rendered, {
+      "Total jobs": "2",
+      Simulated: "1",
+      Denied: "1",
+      Failed: "0",
+    });
+  });
+
+  it("formats job timestamps instead of printing raw epochs", async () => {
+    showRoute("#/dashboard");
+    await flush();
+    const text = root().textContent;
+    assert.ok(
+      text.includes(formatTimestamp(1700000001)),
+      "the created column must use the shared timestamp helper"
+    );
+    assert.doesNotMatch(text, /1700000001/, "no raw epoch may reach the dashboard");
+    assert.doesNotMatch(text, /1700000002/, "no raw epoch may reach the dashboard");
+  });
+
+  it("shows zeroed statistic cards when the stats payload is empty", async () => {
+    start({ "GET /api/jobs/stats": { status: 200, body: { total: 0, simulated: 0, denied: 0, failed: 0 } } });
+    showRoute("#/dashboard");
+    await flush();
+    const values = root()
+      .querySelectorAll(".stat__value")
+      .map((el) => el.textContent);
+    assert.deepEqual(values, ["0", "0", "0", "0"]);
   });
 
   it("shows the operating mode from GET /health", async () => {
@@ -149,8 +198,7 @@ describe("dashboard - happy path", () => {
   });
 });
 
-describe("dashboard - independent section failure", () => {
-  it("one failing section leaves the other three rendered", async () => {
+describe("dashboard - independent section failure", () => {  it("one failing section leaves the other three rendered", async () => {
     start({ "GET /api/jobs": { status: 500, body: { detail: "boom" } } });
     showRoute("#/dashboard");
     await flush();
@@ -268,5 +316,28 @@ describe("dashboard - honest empty states", () => {
     const inst = containing(root(), "Target instances");
     assert.match(inst.textContent, /No target instances defined/);
     assert.ok(inst.querySelectorAll("a").some((a) => a.getAttribute("href") === "#/instances"));
+  });
+});
+
+describe("formatTimestamp", () => {
+  it("renders epoch seconds as a human-readable date and time", () => {
+    const formatted = formatTimestamp(1700000001);
+    assert.notEqual(formatted, "-");
+    assert.notEqual(formatted, "1700000001");
+    assert.ok(formatted.length > 4, "a formatted date must not be a bare number");
+  });
+
+  it("accepts the numeric string form the API may serialize", () => {
+    assert.equal(formatTimestamp("1700000001"), formatTimestamp(1700000001));
+  });
+
+  it("returns a dash for missing, blank, boolean or non-numeric values", () => {
+    for (const value of [undefined, null, "", "   ", true, false, "nope", NaN, Infinity, {}, []]) {
+      assert.equal(formatTimestamp(value), "-", `unexpected formatting for ${String(value)}`);
+    }
+  });
+
+  it("does not throw on an out-of-range epoch", () => {
+    assert.doesNotThrow(() => formatTimestamp(Number.MAX_SAFE_INTEGER));
   });
 });

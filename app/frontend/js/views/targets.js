@@ -23,9 +23,10 @@ import { registerView } from "../app.js";
 import {
   InlineError,
   NavLink,
+  PageHead,
   Panel,
   RetryButton,
-  SimulationNotice,
+  StatRow,
 } from "../components.js";
 import { badge, empty, h, pending, render, table, text, asArray } from "../dom.js";
 
@@ -86,13 +87,20 @@ const LOAD_FAILED_MESSAGE = "The target catalog could not be loaded.";
  */
 function attachSlot(root) {
   const slot = h("div", { class: "targets__slot" });
-  render(root, [slot]);
+  render(root, [
+    PageHead(
+      "Targets",
+      "The target types PassOrch can plan a simulated audit against. The catalog is read-only and served by the backend policy map.",
+      [NavLink("Open Plan Preview", "/plan")]
+    ),
+    slot,
+  ]);
   return slot;
 }
 
 /** Paint the fixed failure state into `slot` - never carries exception text. */
 function paintFailure(slot) {
-  render(slot, [SimulationNotice(), InlineError({ kind: "error", message: LOAD_FAILED_MESSAGE })]);
+  render(slot, [InlineError({ kind: "error", message: LOAD_FAILED_MESSAGE })]);
 }
 
 /** Load the catalog into a fresh owned slot. Never rejects: a failure of the
@@ -108,9 +116,7 @@ async function fillSlot(slot, root) {
   const res = await api.get("/api/targets");
   if (!res.ok) {
     render(slot, [
-      SimulationNotice(),
-      Panel("Targets", [
-        h("div", { class: "section-body" }),
+      Panel("Target catalog", [
         InlineError(res.error),
         RetryButton(() => start(root), "Retry loading targets"),
       ]),
@@ -122,11 +128,9 @@ async function fillSlot(slot, root) {
 
   if (targets.length === 0) {
     render(slot, [
-      SimulationNotice(),
       Panel(
-        "Targets",
+        "Target catalog",
         [
-          h("div", { class: "section-body" }),
           empty(
             "No target types available",
             "The target catalog is empty. Target types come from the server-side policy map, so this screen shows nothing until that map has entries."
@@ -144,23 +148,32 @@ async function fillSlot(slot, root) {
     (t) => t !== null && typeof t === "object" && typeof t.target === "string" && t.target.length > 0
   );
   const usableCount = valid.filter((t) => t.usable === true).length;
+  const enabledCount = valid.filter((t) => t.enabled === true).length;
 
   render(slot, [
-    SimulationNotice(),
-    Panel(
-      "Targets",
+    StatRow(
       [
-        h("div", { class: "section-body" }),
+        ["Target types", valid.length, undefined],
+        ["Usable", usableCount, "ok"],
+        ["Enabled", enabledCount, undefined],
+        ["Needs attention", valid.length - usableCount, valid.length - usableCount > 0 ? "warn" : undefined],
+      ],
+      "Target catalog summary"
+    ),
+    Panel(
+      "Target catalog",
+      [
         table(
           ["Target", "Description", "Formats", "Enabled", "Usable", "Plan"],
           valid.map((t) => [
             text(t.target),
             text(t.description || "-"),
-            text(formatsText(t.formats)),
+            h("span", { class: "formats", text: formatsText(t.formats) }),
             enabledCell(t),
             usableCell(t),
             t.usable === true ? PlanLink(t) : badge("-", "muted"),
-          ])
+          ]),
+          "Target types and their supported formats"
         ),
         h("p", {
           class: "panel__hint",
@@ -168,7 +181,6 @@ async function fillSlot(slot, root) {
             `${valid.length} target type(s), ${usableCount} usable. ` +
             "A usable target can be used to request a simulated plan preview - no engine is executed.",
         }),
-        NavLink("Open Plan Preview", "/plan"),
       ],
       "Static, read-only catalog of audit target types served by the backend."
     ),

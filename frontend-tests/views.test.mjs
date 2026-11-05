@@ -9,7 +9,7 @@ import "../app/frontend/js/views/targets.js";
 import "../app/frontend/js/views/instances.js";
 import "../app/frontend/js/views/plan.js";
 import "../app/frontend/js/views/jobs.js";
-import { allText, click, containing, rootText, setup, flush, byTag } from "./_fixtures.mjs";
+import { allText, assertLoneShellBanner, click, containing, rootText, setup, flush, byTag } from "./_fixtures.mjs";
 
 beforeEach(() => {
   setup({
@@ -86,7 +86,7 @@ describe("navigation", () => {
     assert.equal(info.path, "/dashboard");
     assert.equal(info.rendered, true);
     await flush();
-    assert.match(allText(globalThis.document.getElementById("view-root")), /Simulation only/);
+    assert.match(assertLoneShellBanner(globalThis.document).textContent, /Simulation only/);
   });
 
   it("marks the active nav link with aria-current", () => {
@@ -118,15 +118,27 @@ describe("navigation", () => {
     assert.equal(info.path, "/engines");
     assert.equal(info.rendered, true, "Engines view must be implemented");
     await flush();
-    const text = allText(globalThis.document.getElementById("view-root"));
-    assert.match(text, /Simulation only/);
+    assert.match(assertLoneShellBanner(globalThis.document).textContent, /Simulation only/);
   });
 
   it("navigates hash changes through the registered listener", async () => {
     const root = globalThis.document.getElementById("view-root");
     showRoute("#/targets");
     await flush();
-    assert.match(allText(root), /Simulation only/);
+    assert.match(assertLoneShellBanner(globalThis.document).textContent, /Simulation only/);
+    assert.doesNotMatch(allText(root), /Simulation only/, "views must not duplicate the shell banner");
+  });
+
+  it("keeps exactly one simulation banner after every route switch", async () => {
+    for (const path of ["/dashboard", "/engines", "/targets", "/instances", "/plan", "/jobs"]) {
+      showRoute("#" + path);
+      await flush();
+      const notices = globalThis.document.querySelectorAll(".simulation-notice");
+      assert.equal(notices.length, 1, `${path} must leave exactly one simulation banner`);
+      assert.equal(notices[0].getAttribute("id"), "simulation-notice");
+      const root = globalThis.document.getElementById("view-root");
+      assert.doesNotMatch(allText(root), /Simulation only/, `${path} re-rendered the banner inside the view`);
+    }
   });
 });
 
@@ -179,7 +191,7 @@ describe("parseHash", () => {
       info = showRoute("#/plan?target=%zz");
     });
     assert.equal(info.path, "/plan");
-    assert.match(rootText(root()), /Simulation only/);
+    assert.match(assertLoneShellBanner(globalThis.document).textContent, /Simulation only/);
   });
 
   it("keeps a literal `?` inside the query value as data, not a delimiter", () => {

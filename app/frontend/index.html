@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
     <title>PassOrch &mdash; simulated audit planning</title>
     <link rel="stylesheet" href="/static/css/styles.css" />
   </head>
@@ -11,8 +12,11 @@
 
     <header class="app-header">
       <div class="app-header__title">
-        <h1>PassOrch</h1>
-        <p class="app-header__subtitle">Simulated password-audit planning</p>
+        <div class="app-header__badge" aria-hidden="true">P</div>
+        <div>
+          <h1>PassOrch</h1>
+          <p class="app-header__subtitle">Simulated password-audit planning console</p>
+        </div>
       </div>
 
       <!--
@@ -34,19 +38,21 @@
       <a href="#/jobs" data-nav-link>Jobs</a>
     </nav>
 
-    <main class="app-main" id="main" aria-live="polite">
+    <main class="app-main" id="main">
       <!--
         Every view renders into here through text nodes only. Views are
         registered in js/app.js; unimplemented ones fall back to the honest
-        placeholder in js/components.js.
+        placeholder in js/components.js. The root is intentionally not a
+        panel: views compose their own panels, so a panel here would nest
+        cards inside cards.
       -->
-      <section class="panel" id="view-root" data-view-root></section>
+      <section id="view-root" data-view-root aria-label="Application content"></section>
     </main>
 
     <footer class="app-footer">
       <p>
         Read-only capability data, structured plan previews and simulated jobs.
-        No engine binary is invoked.
+        No engine binary is invoked. No password is ever cracked.
       </p>
     </footer>
 

@@ -12,7 +12,7 @@
  *      are "" when the job was created without an association.
  */
 
-import { badge, h, kv, table, text } from "./dom.js";
+import { badge, h, kv, table, text, formatTimestamp } from "./dom.js";
 
 /* ---- status tones ------------------------------------------------------- */
 
@@ -118,20 +118,6 @@ export function StepsList(steps) {
   return ul;
 }
 
-/* ---- simulation-only notice --------------------------------------------- */
-
-/**
- * The persistent banner. Rendered by the shell, and also exposed as a function
- * so any view can restate it next to a plan or job result.
- */
-export function SimulationNotice() {
-  return h("p", {
-    class: "simulation-notice",
-    attrs: [["role", "status"], ["data-simulation-notice", "true"]],
-    text: "Simulation only - no engine is ever executed.",
-  });
-}
-
 /* ---- panels ------------------------------------------------------------- */
 
 export function Panel(title, children, hint) {
@@ -154,6 +140,64 @@ export function Panel(title, children, hint) {
   return h("section", { class: "panel", children: kids });
 }
 
+/**
+ * The heading block that opens every non-dashboard page. The title is an h2
+ * because the shell already owns the single h1; page panels then use h2/h3
+ * inside their own sections.
+ */
+export function PageHead(title, hint, actions) {
+  const kids = [
+    h("h2", { class: "page-head__title", text: title }),
+  ];
+  if (hint) {
+    kids.push(h("p", { class: "page-head__hint", text: hint }));
+  }
+  if (Array.isArray(actions) && actions.length > 0) {
+    kids.push(h("div", { class: "page-head__actions", children: actions }));
+  }
+  return h("header", { class: "page-head", children: kids });
+}
+
+/**
+ * A bordered message block with a semantic tone. `role` is only set when the
+ * caller needs live-region behaviour (`status` for an outcome, `alert` for a
+ * denial or failure); ordinary explanatory callouts stay plain sections.
+ */
+export function Callout(tone, title, text, role) {
+  const kids = [h("p", { class: "callout__title", text: title })];
+  if (text) {
+    kids.push(h("p", { class: "callout__text", text }));
+  }
+  const attrs = role ? [["role", role]] : [];
+  return h("section", {
+    class: `callout callout--${tone}`,
+    attrs,
+    children: kids,
+  });
+}
+
+/** One labelled statistic tile. `value` is rendered as text, never markup. */
+export function StatCard(label, value, tone) {
+  const valueEl = h("p", { class: "stat__value", text: String(value) });
+  if (tone) {
+    valueEl.setAttribute("data-tone", tone);
+  }
+  return h("div", {
+    class: "stat",
+    children: [h("p", { class: "stat__label", text: label }), valueEl],
+  });
+}
+
+/** A responsive row of statistic tiles built from `[label, value, tone]`. */
+export function StatRow(cards, label) {
+  const items = Array.isArray(cards) ? cards : [];
+  return h("div", {
+    class: "stat-row",
+    attrs: label ? [["role", "group"], ["aria-label", label]] : [],
+    children: items.map((card) => StatCard(card[0], card[1], card[2])),
+  });
+}
+
 /* ---- plan rendering ----------------------------------------------------- */
 
 function SelectionBlock(preview) {
@@ -162,7 +206,7 @@ function SelectionBlock(preview) {
   return h("section", {
     class: "panel",
     children: [
-      h("h3", { text: "Selection" }),
+      h("h3", { class: "panel__title", text: "Selection" }),
       kv([
         ["status", StatusBadge(sel.status || "")],
         ["reason", text(sel.reason || "-")],
@@ -186,7 +230,7 @@ function AuthorizationBlock(preview) {
   rows.push(["mode", text(auth.mode || "-")]);
   return h("section", {
     class: "panel",
-    children: [h("h3", { text: "Authorization" }), kv(rows)],
+    children: [h("h3", { class: "panel__title", text: "Authorization" }), kv(rows)],
   });
 }
 
@@ -196,7 +240,7 @@ function RequestBlock(preview) {
   return h("section", {
     class: "panel",
     children: [
-      h("h3", { text: "Request" }),
+      h("h3", { class: "panel__title", text: "Request" }),
       kv([
         ["mode", text(req.mode || "-")],
         ["engine", text(req.engine || "-")],
@@ -244,7 +288,7 @@ export function PlanPreviewView(preview) {
   wrap.appendChild(
     h("section", {
       class: "panel",
-      children: [h("h3", { text: "Simulation plan" }), kv(planRows)],
+      children: [h("h3", { class: "panel__title", text: "Simulation plan" }), kv(planRows)],
     })
   );
 
@@ -254,7 +298,7 @@ export function PlanPreviewView(preview) {
       h("section", {
         class: "panel",
         children: [
-          h("h3", { text: "Simulation result" }),
+          h("h3", { class: "panel__title", text: "Simulation result" }),
           kv([
             ["status", StatusBadge(sim.status || "")],
             ["simulation id", CodeOrDash(sim.simulation_id)],
@@ -271,7 +315,7 @@ export function PlanPreviewView(preview) {
       h("section", {
         class: "panel",
         children: [
-          h("h3", { text: "Simulation result" }),
+          h("h3", { class: "panel__title", text: "Simulation result" }),
           h("p", {
             class: "panel__hint",
             text: "No simulation was produced for this request.",
@@ -313,21 +357,24 @@ export function JobDetailView(job) {
   const summaryRows = [
     ["status", StatusBadge(job.status || "")],
     ["target", text(job.target || "-")],
-    ["created", text(job.created_at === undefined ? "-" : String(job.created_at))],
+    ["created", text(formatTimestamp(job.created_at))],
     ["job id", CodeOrDash(job.job_id)],
   ];
   if (job.failure_reason) {
     summaryRows.push(["failure reason", text(job.failure_reason)]);
   }
   wrap.appendChild(
-    h("section", { class: "panel", children: [h("h3", { text: "Summary" }), kv(summaryRows)] })
+    h("section", {
+      class: "panel",
+      children: [h("h3", { class: "panel__title", text: "Summary" }), kv(summaryRows)],
+    })
   );
 
   wrap.appendChild(
     h("section", {
       class: "panel",
       children: [
-        h("h3", { text: "Target instance association" }),
+        h("h3", { class: "panel__title", text: "Target instance association" }),
         AssociationBlock(job),
       ],
     })
@@ -357,26 +404,32 @@ export function JobRow(job) {
     CodeOrDash(job.job_id),
     StatusBadge(job.status || ""),
     text(job.target || "-"),
-    job.created_at === undefined ? "-" : String(job.created_at),
+    formatTimestamp(job.created_at),
   ];
 }
 
 export function JobTable(jobs) {
-  return table(["Job", "Status", "Target", "Created"], jobs.map(JobRow));
+  return table(
+    ["Job", "Status", "Target", "Created"],
+    jobs.map(JobRow),
+    "Recorded jobs"
+  );
 }
 
 /* ---- engines / targets / instances -------------------------------------- */
 
 export function EnginesTable(engines) {
   return table(
-    ["Engine", "Discovered", "Capability", "Formats", "Real-engine compatible"],
+    ["Engine", "Version", "Discovered", "Capability", "Formats", "Real-engine compatible"],
     engines.map((e) => [
       text(e.engine || "-"),
+      text(e.version || "-"),
       BoolBadge(e.discovered === true, "yes", "no"),
       StatusBadge(e.capability_status || ""),
-      text((e.formats || []).join(", ") || "-"),
+      text((Array.isArray(e.formats) ? e.formats : []).join(", ") || "-"),
       BoolBadge(e.real_engine_compatible === true, "yes", "no"),
-    ])
+    ]),
+    "Engine capability state as currently held by the server"
   );
 }
 
@@ -386,10 +439,11 @@ export function TargetsTable(targets) {
     targets.map((t) => [
       text(t.target || "-"),
       text(t.description || "-"),
-      text((t.formats || []).join(", ") || "-"),
+      text((Array.isArray(t.formats) ? t.formats : []).join(", ") || "-"),
       BoolBadge(t.enabled === true, "yes", "no"),
       BoolBadge(t.usable === true, "yes", "no"),
-    ])
+    ]),
+    "Target types served by the backend policy map"
   );
 }
 
@@ -412,8 +466,9 @@ export function InstancesTable(instances, onSelect) {
       CodeOrDash(inst.id),
       StatusBadge(inst.target_type || ""),
       text(inst.description || "-"),
-      inst.created_at === undefined ? "-" : String(inst.created_at),
-    ])
+      formatTimestamp(inst.created_at),
+    ]),
+    "Target instances"
   );
 }
 

@@ -33,11 +33,12 @@ import {
   EnginesTable,
   InlineError,
   NavLink,
+  PageHead,
   Panel,
   RetryButton,
   SAFE_FAILURE_MESSAGE,
+  StatRow,
   StatusBadge,
-  SimulationNotice,
 } from "../components.js";
 import { empty, h, pending, render, table, text, asArray } from "../dom.js";
 
@@ -87,22 +88,31 @@ function refreshFailureHint(res) {
 /* ---- capability status legend -------------------------------------------- */
 
 function statusLegend() {
-  return h("div", {
-    class: "stack",
-    children: [
-      h("p", {
-        class: "panel__hint",
-        text: "VERIFIED: supported capability metadata was verified for this engine - not that real execution is enabled.",
-      }),
-      h("p", {
-        class: "panel__hint",
-        text: "UNKNOWN: no verified capability evidence is held (for example the engine binary is not installed).",
-      }),
-      h("p", {
-        class: "panel__hint",
-        text: "ERROR: the last discovery attempt for this engine failed.",
-      }),
+  const rows = [
+    [
+      "verified",
+      "Supported capability metadata was verified for this engine. This does not mean real execution is enabled.",
     ],
+    [
+      "unknown",
+      "No verified capability evidence is held - for example because the engine binary is not installed.",
+    ],
+    [
+      "error",
+      "The last discovery attempt for this engine failed. The recorded reason stays on the report.",
+    ],
+  ];
+  return h("div", {
+    class: "legend",
+    children: rows.map((row) => {
+      return h("div", {
+        class: "legend__item",
+        children: [
+          StatusBadge(row[0]),
+          h("p", { class: "legend__text", text: row[1] }),
+        ],
+      });
+    }),
   });
 }
 
@@ -173,7 +183,8 @@ function refreshOutcomeNodes(reports) {
           BoolBadge(r.discovered === true, "yes", "no"),
           StatusBadge(r.capability_status || ""),
           text(r.reason || "-"),
-        ])
+        ]),
+        "Metadata discovery report"
       )
     );
   }
@@ -196,16 +207,20 @@ async function renderEngines(root) {
   };
 
   render(root, [
-    SimulationNotice(),
-    Panel(
+    PageHead(
       "Engines",
+      "Engine capability state held by the server. Discovery is allowlisted metadata only; no audit or cracking operation is ever run.",
+      [NavLink("Back to Dashboard", "/dashboard")]
+    ),
+    Panel(
+      "Engine capability state",
       [
         h("p", { class: "panel__hint", text: DISCOVERY_WORDING }),
         ctx.controlsSlot,
         ctx.resultSlot,
         ctx.listSlot,
       ],
-      "Engine capability state as currently held by the server. Refresh runs only when you click the button."
+      "Refresh runs only when you click the button."
     ),
   ]);
 
@@ -218,18 +233,40 @@ async function renderEngines(root) {
 function renderControls(ctx, busy) {
   render(ctx.controlsSlot, [
     h("div", {
-      class: "actions",
+      class: "toolbar",
       children: [
-        h("button", {
-          type: "button",
-          class: "btn btn--primary",
-          text: "Refresh engines",
-          attrs: [["data-refresh-button", "true"]].concat(busy ? [["disabled", ""]] : []),
-          onClick: () => runRefresh(ctx),
+        h("p", { class: "toolbar__title", text: "Metadata discovery" }),
+        h("div", {
+          class: "toolbar__group",
+          children: [
+            h("button", {
+              type: "button",
+              class: "btn btn--primary",
+              text: "Refresh engines",
+              attrs: [["data-refresh-button", "true"]].concat(busy ? [["disabled", ""]] : []),
+              onClick: () => runRefresh(ctx),
+            }),
+          ],
         }),
       ],
     }),
   ]);
+}
+
+/** Summary tiles derived only from the engine records the API returned. */
+function engineSummary(engines) {
+  const verified = engines.filter((e) => e.capability_status === "verified").length;
+  const discovered = engines.filter((e) => e.discovered === true).length;
+  const attention = engines.length - verified;
+  return StatRow(
+    [
+      ["Engines tracked", engines.length, undefined],
+      ["Verified capability", verified, "ok"],
+      ["Need attention", attention, attention > 0 ? "warn" : undefined],
+      ["Discovered", discovered, undefined],
+    ],
+    "Engine capability summary"
+  );
 }
 
 /** GET /api/engines -> the capability table (or the honest empty state).
@@ -262,7 +299,9 @@ async function reloadList(ctx, res) {
   }
 
   render(ctx.listSlot, [
+    engineSummary(engines),
     EnginesTable(engines),
+    h("p", { class: "panel__hint", text: "Capability legend" }),
     statusLegend(),
     h("p", {
       class: "panel__hint",
@@ -345,7 +384,7 @@ export const EnginesView = registerView("/engines", {
   title: "Engines",
   render: (root) => {
     renderEngines(root).catch((err) => {
-      render(root, [SimulationNotice(), InlineError(err)]);
+      render(root, [InlineError(err)]);
     });
   },
 });
