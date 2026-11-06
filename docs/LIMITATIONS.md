@@ -77,6 +77,30 @@ risks are expanded in [THREAT_MODEL.md](../THREAT_MODEL.md#residual-risks-accept
   bearer token (when enabled) is a single shared secret, not an identity
   system. Reads stay unauthenticated by design.
 
+## Frontend and accessibility
+
+* **No formal WCAG conformance claim.** The UI aims for WCAG 2.2 AA practices
+  (landmarks, skip link, visible focus, labelled controls, captioned tables,
+  reduced-motion and forced-colour rules), but it has not been through a formal
+  accessibility audit or assistive-technology matrix. Treat accessibility as a
+  continuing requirement, not a certified result.
+* **Modern evergreen browsers only.** The stylesheet uses modern CSS such as
+  `color-mix()`, `:focus-visible`, `prefers-*` media queries and forced-colour
+  keywords. There are no polyfills; very old browsers may lose colour tints or
+  focus styling, though content remains text-based and readable.
+* **English only.** There is no localisation layer or translated copy.
+* **Narrow-screen tables scroll, they do not reflow into cards.** Below the
+  table minimum width the wrapper scrolls horizontally, which keeps headers
+  aligned; the page itself does not overflow. Very large tables therefore need
+  a horizontal swipe on a phone.
+* **No client-side persistence.** Filters, pagination, form values and the
+  selected job live in memory for the session; a reload returns to the default
+  view. The backend remains the only source of truth.
+* **Browser automation is local-only.** The Playwright suite is optional and is
+  not installed or run by CI. Frontend logic is covered in CI by the Node
+  harness (`frontend-tests/`) and static Python contracts; responsive and
+  accessibility checks are manual review steps, so they are not regression-proof.
+
 ## Operations
 
 * **Uvicorn access logs plus the audit-event stdout are the only log

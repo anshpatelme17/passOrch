@@ -232,9 +232,9 @@ def test_retry_reinvokes_the_same_loader() -> None:
     assert re.search(r"RetryButton\(\(\) => start\(root\)", TARGETS_CODE)
 
 
-def test_view_preserves_the_simulation_only_notice_in_every_branch() -> None:
+def test_view_leaves_the_simulation_notice_to_the_shell_in_every_branch() -> None:
     code = TARGETS_CODE
-    assert code.count("SimulationNotice()") >= 3, "pending, error, empty and loaded branches"
+    assert "SimulationNotice" not in code
 
 
 def test_view_declares_the_simulation_only_caveat() -> None:

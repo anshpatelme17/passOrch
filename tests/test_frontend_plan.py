@@ -261,8 +261,8 @@ def test_view_links_back_to_targets() -> None:
     assert 'NavLink("Back to Targets", "/targets")' in PLAN_CODE
 
 
-def test_view_preserves_the_simulation_only_notice() -> None:
-    assert "SimulationNotice()" in PLAN_CODE
+def test_view_leaves_the_simulation_notice_to_the_shell() -> None:
+    assert "SimulationNotice" not in PLAN_CODE
     assert "Nothing is ever executed." in PLAN_RAW
 
 

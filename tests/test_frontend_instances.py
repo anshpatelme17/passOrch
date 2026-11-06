@@ -431,8 +431,8 @@ def test_list_renders_only_schema_fields() -> None:
         assert field in used, field
 
 
-def test_list_handles_non_numeric_created_at() -> None:
-    assert 'typeof inst.created_at === "number"' in INSTANCES_CODE
+def test_list_formats_created_at_through_the_shared_helper() -> None:
+    assert "formatTimestamp(inst.created_at)" in INSTANCES_CODE
 
 
 def test_catalog_options_are_filtered_for_malformed_rows() -> None:
@@ -441,9 +441,9 @@ def test_catalog_options_are_filtered_for_malformed_rows() -> None:
     assert 'isNonEmptyString(t.target)' in code
 
 
-def test_view_preserves_the_simulation_only_notice() -> None:
+def test_view_leaves_the_simulation_notice_to_the_shell() -> None:
     code = INSTANCES_CODE
-    assert code.count("SimulationNotice()") >= 2
+    assert "SimulationNotice" not in code
     assert "No engine binary is invoked" in INSTANCES_RAW
 
 

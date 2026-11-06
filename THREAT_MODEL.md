@@ -15,9 +15,11 @@ what we protect, from whom, how, and what we deliberately do not claim.
   cap), and the Docker/Compose deployment artifacts.
 * **Out of scope / non-goals**: real password cracking of any kind (there is
   no execution path), multi-user authorization (single-operator tool),
-  in-app TLS termination, cluster-scale rate limiting, secret vaulting, and
+  in-app TLS termination, cluster-scale rate limiting, secret vaulting,
   availability under deliberate resource exhaustion beyond the documented
-  guards.
+  guards, and formal accessibility conformance. Layout, responsive breakpoints
+  and visual redesigns are presentation concerns: they never widen a trust
+  boundary, add an API call site or bypass the text-only rendering contract.
 * **Default posture**: loopback-only, no authentication, in-memory stores.
   Every hardening control below is either on by default (simulation-only,
   fail-closed policy, strict schemas, parameterised SQL, same-origin SPA) or

@@ -284,10 +284,11 @@ def test_list_reads_only_job_summary_fields() -> None:
 
 def test_list_renders_the_summary_columns_including_an_action() -> None:
     code = JOBS_CODE
-    assert '["Job", "Status", "Target", "Created", "", ""]' in code
+    assert '["Job", "Status", "Target", "Created", "Details", "Delete"]' in code
     assert 'button("Details", () => renderDetail(job.job_id))' in code
     assert 'h("code", { text: job.job_id })' in code
-    assert 'job.created_at === undefined ? "-" : String(job.created_at)' in code
+    assert "formatTimestamp(job.created_at)" in code
+    assert "String(job.created_at)" not in code
 
 
 def test_list_reports_the_total_from_the_payload() -> None:
@@ -394,9 +395,8 @@ def test_list_refreshes_after_successful_creation() -> None:
     assert fail_at > 0 and refresh_at > fail_at, "refresh must follow the failure return"
 
 
-def test_view_preserves_the_simulation_only_notice() -> None:
-    assert JOBS_CODE.count("SimulationNotice()") >= 2
-    assert "SimulatedOnlyBadge()" in JOBS_CODE
+def test_view_leaves_the_simulation_notice_to_the_shell() -> None:
+    assert "SimulationNotice" not in JOBS_CODE
     assert "No engine binary is ever invoked" in JOBS_RAW
 
 
@@ -642,7 +642,7 @@ def test_legacy_dashboard_is_not_imported_by_jobs() -> None:
 
 def test_jobs_view_has_delete_button_in_list() -> None:
     src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
-    assert 'button("Delete", () => confirmAndDeleteJob(job))' in src
+    assert 'button("Delete", () => confirmAndDeleteJob(job), "btn btn--danger")' in src
 
 
 def test_jobs_view_has_confirmation_dialog() -> None:

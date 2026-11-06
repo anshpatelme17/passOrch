@@ -309,9 +309,14 @@ def test_router_never_invents_a_route() -> None:
     assert '"/dashboard"' in code
 
 
-def test_shell_renders_the_simulation_only_notice() -> None:
+def test_shell_declares_the_primary_simulation_notice() -> None:
+    """One persistent banner lives in the static shell, outside every view."""
+
     code = _code_of("app.js")
-    assert "SimulationNotice" in code
+    assert "SimulationNotice" not in code
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    assert html.count('id="simulation-notice"') == 1
+    assert "Simulation only" in html
 
 
 def test_components_handle_the_denied_plan_convention() -> None:
@@ -412,14 +417,14 @@ def test_no_unused_import_bindings() -> None:
 
 def test_dom_helpers_export_the_state_components_views_need() -> None:
     exported = _exports("dom.js")
-    for required in ("h", "text", "clear", "render", "table", "badge", "kv", "errorState"):
+    for required in ("h", "text", "clear", "render", "table", "badge", "kv", "errorState", "formatTimestamp"):
         assert required in exported, required
 
 
 def test_components_export_the_renderers_views_need() -> None:
     exported = _exports("components.js")
     for required in (
-        "SimulationNotice",
+        "SimulatedOnlyBadge",
         "PlanPreviewView",
         "JobDetailView",
         "JobTable",

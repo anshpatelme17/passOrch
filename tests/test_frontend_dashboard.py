@@ -270,9 +270,11 @@ def test_dashboard_registers_itself_with_the_router() -> None:
     assert "render: renderDashboard" in DASHBOARD_CODE
 
 
-def test_dashboard_keeps_the_simulation_only_notice_visible() -> None:
-    assert "SimulationNotice()" in DASHBOARD_CODE
-    assert "Simulation only" in DASHBOARD_CODE
+def test_dashboard_leaves_the_simulation_notice_to_the_shell() -> None:
+    assert "SimulationNotice" not in DASHBOARD_CODE
+    assert "Simulation only" not in DASHBOARD_CODE
+    shell = _read(FRONTEND_DIR / "index.html")
+    assert shell.count('id="simulation-notice"') == 1
 
 
 def test_dashboard_uses_only_safe_dom_helpers() -> None:
@@ -389,6 +391,10 @@ def test_dashboard_statistics_renders_counts() -> None:
     assert "data.simulated" in DASHBOARD_CODE
     assert "data.denied" in DASHBOARD_CODE
     assert "data.failed" in DASHBOARD_CODE
+    # Four summary cards, one per aggregate, in the reusable stat row.
+    assert 'class: "stat-row"' in DASHBOARD_CODE
+    for label in ('"Total jobs"', '"Simulated"', '"Denied"', '"Failed"'):
+        assert label in DASHBOARD_CODE, label
 
 
 def test_dashboard_statistics_clarifies_simulation_only() -> None:

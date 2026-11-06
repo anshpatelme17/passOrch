@@ -97,13 +97,49 @@ The adapter/selection/policy/discovery-core files listed above are
 
 ## Frontend structure
 
+* `app/frontend/index.html` — static shell: skip link, header with the single
+  simulation banner, primary navigation, `<main id="main">` and the
+  `#view-root` the router renders into. The root is deliberately not a panel,
+  because every view composes its own panels.
+* `app/frontend/js/app.js` — hash router and view registry. Only the six
+  declared routes resolve; an unknown hash falls back to the dashboard, and
+  the hash is never treated as a filesystem path.
 * `app/frontend/js/api.js` — the only fetch site; URL prefixes are allowlisted
-  (`/api/`, `/health`).
+  (`/api/`, `/health`), path segments are encoded, responses are normalised into
+  `{ok, status, data, error}`, and no view calls `fetch` itself.
+* `app/frontend/js/dom.js` — `textContent`-only element helpers, captioned
+  semantic tables, timestamp formatting, and the shared pending/empty/error
+  states. There is no `innerHTML`, `eval` or HTML-string rendering path.
+* `app/frontend/js/components.js` — shared primitives: `PageHead`, `Panel`,
+  `Callout`, `StatCard`, `StatRow`, status badges, and the engine/target/
+  instance/job/plan detail views.
 * `app/frontend/js/views/*.js` — one module per SPA view (dashboard, engines,
-  targets, jobs, instances, plan); rendering goes through `components.js` helpers that
-  set `textContent` only (no `innerHTML` anywhere).
+  targets, jobs, instances, plan). Each owns its request, state and retry;
+  list and preview requests use generation counters so stale responses cannot
+  overwrite newer results, and mutations latch while in flight.
+* `app/frontend/css/styles.css` — design tokens (navy surfaces, one blue
+  accent, semantic status colours, spacing, focus ring), shared primitives,
+  responsive rules at 1024px / 640px / 400px, and
+  `prefers-reduced-motion` / `prefers-contrast` / `forced-colors` handling.
 * No bundler, no framework, no external assets; the app serves `index.html`
-  and `/js/*` directly.
+  and `/js/*` directly. Tables keep their semantic caption and `scope="col"`
+  headers and scroll inside a wrapper on narrow screens instead of squeezing
+  columns; the page itself does not overflow.
+
+### Frontend state and accessibility conventions
+
+* Loading, empty, error and loaded states are rendered into slots created up
+  front, so the panel structure stays stable while data arrives.
+* Duplicate mutations are blocked by an in-flight latch and disabled controls;
+  the list refreshes only after a successful mutation.
+* Every timestamp goes through the shared formatter — raw Unix seconds are
+  never shown.
+* `aria-current="page"` marks the active destination; `role="status"` and
+  `role="alert"` are reserved for outcomes and confirmations; form help text is
+  linked with `aria-describedby`; focus is always visibly outlined.
+* Deletes use inline confirmation panels rather than `window.confirm`, so focus
+  stays in the page and the confirmation text is readable by assistive
+  technology.
 
 ## Simulation guarantees (summary)
 

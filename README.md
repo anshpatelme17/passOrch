@@ -2,6 +2,30 @@
 
 Simulation-only password-audit planning platform. No engine is ever executed.
 
+## Features
+
+- **Six-page planning console** — dashboard, engines, targets, instances, plan
+  preview and jobs, all served from one hash-routed vanilla-JavaScript SPA.
+- **Honest capability state** — engine metadata is read from the server;
+  discovery runs only on an explicit **Refresh engines** click and never from a
+  page load or timer.
+- **Simulated plan previews** — authorised and denied plans are both structured
+  HTTP 200 outcomes; a denial is shown as a recorded policy decision, not a
+  network failure.
+- **Target instances** — create, inspect, rename, re-describe and delete named
+  targets; jobs snapshot their association at creation time.
+- **Recorded jobs** — create, filter, sort, paginate, inspect, export as a
+  versioned JSON audit trail, and delete. A job is always `simulated`, `denied`
+  or `failed`; there is no running state, worker queue or progress to poll.
+- **Resilient loading** — every data section has its own loading, empty, error
+  and retry state, so one failed request never blanks the page.
+- **No execution, by construction** — the SPA can only call the allowlisted API
+  in `js/api.js`; it cannot name an executable, argument, mode other than
+  `simulated`, or engine operation.
+- **Responsive and keyboard-operable** — layouts are exercised from 1440px down
+  to 360px, with visible focus, semantic tables, labelled controls, reduced
+  motion support and forced-colours rules.
+
 ## Architecture
 
 PassOrch is a FastAPI application with a vanilla-JavaScript single-page frontend. It follows a layered architecture:
@@ -111,18 +135,66 @@ Every non-2xx response the application builds — request-guard rejections and e
 - **The single exception**: FastAPI's automatic request-body validation keeps its documented Pydantic `422` array shape (`[{"loc": [...], "msg": "...", "type": "..."}]`) so OpenAPI tooling and Pydantic-aware clients keep working. Domain and query-parameter rejections raised inside handlers are not Pydantic validation and use the envelope (`invalid_request`).
 - The SPA's `describeError` renders the object shape as `"<message> (<code>)"`.
 
-## Frontend Views
+## Page walkthrough
 
-| Route | Description |
-|-------|-------------|
-| `/dashboard` | Health, engines, statistics, recent jobs, instances |
-| `/engines` | Engine capability table with a user-triggered **Refresh engines** button (metadata discovery; loads with a plain GET, never refreshes automatically) |
-| `/targets` | Read-only target catalog with plan links |
-| `/instances` | CRUD for target instances |
-| `/plan` | Plan preview form + result |
-| `/jobs` | Job creation, list, detail, export (JSON attachment download), delete |
+The shell renders one constant simulation banner and one primary navigation;
+the active destination is marked with `aria-current="page"`. Each page owns its
+own request, state and retry.
+
+| Route | What it shows and does |
+|-------|------------------------|
+| `/dashboard` | Four independently loading sections: job statistics, recent jobs, target instances, application health and engine capability. A failure in one section keeps the others usable. |
+| `/engines` | Capability table (engine, version, discovered, capability status, formats, real-engine compatibility) plus summary counts and a legend. **Refresh engines** is the only action and the only thing that can start metadata discovery. |
+| `/targets` | Read-only target catalog with supported formats, enabled/usable state and a link into plan preview for usable targets. |
+| `/instances` | Split layout: filterable, paginated instance list with edit/delete confirmation, and a create form. Mutations require an explicit confirmation and refresh only after success. |
+| `/plan` | Target/mode/reference form with inline help, then a full preview: selection, authorisation, request, simulation plan and simulation result. Denials are rendered as structured outcomes with the policy reason. |
+| `/jobs` | Create form, filter/sort toolbar, summary counts, paginated list, per-job detail, JSON export and delete confirmation. Job detail shows the recorded outcome, association snapshot and preserved preview. |
+
+Cross-cutting behaviour:
+
+- **Loading, empty, error, retry** — each section or list renders a visible state
+  and retries the request it owns; errors are normalised by `js/api.js` and never
+  dump a response body or exception into the page.
+- **Duplicate-submission guards** — create/update/delete handlers latch while a
+  request is pending, and submit controls disable while prerequisites are
+  missing.
+- **Stale-response protection** — list and preview requests carry generation
+  counters, so a slower earlier response cannot overwrite a newer one.
+- **Timestamps** — every timestamp goes through the shared formatter; raw Unix
+  seconds are never printed.
+- **Text-only rendering** — views compose `textContent`-based helpers from
+  `js/dom.js`; there is no `innerHTML`, `eval` or HTML-string rendering path.
+
+### Design system and accessibility
+
+- **Tokens** — `app/frontend/css/styles.css` defines the navy surfaces, one blue
+  accent, four semantic status colours, spacing and focus-ring variables.
+- **Shared primitives** — `PageHead`, `Callout`, `StatCard`, `StatRow`, `Panel`,
+  status badges and captioned tables in `js/components.js` keep every page
+  consistent without a framework.
+- **Breakpoints** — 1024px collapses the dashboard/split layouts to one column,
+  640px switches the navigation to a single horizontally scrollable row and
+  expands touch targets, and 400px stacks stat cards and action buttons.
+- **Tables** — semantic `caption` plus `th scope="col"`; narrow viewports scroll
+  the table inside its own wrapper, so the page itself never overflows.
+- **Keyboard and assistive technology** — skip link, landmarks, visible
+  `:focus-visible` outlines, labelled form controls, `aria-describedby` help
+  text, and live regions only on outcome/confirmation blocks. Dialogs are
+  inline confirmation panels, not untrappable `window.confirm` prompts.
+- **Preferences** — `prefers-reduced-motion` removes the loading spinner
+  animation, `prefers-contrast: more` strengthens borders, and
+  `forced-colors: active` keeps component boundaries visible in Windows High
+  Contrast.
 
 ## Setup
+
+Prerequisites:
+
+- **Python 3.13+** with `pip` (the tested and declared interpreter floor).
+- **Node.js 20+** only for the JavaScript test harness; running the app does not
+  need it.
+- **Playwright + Chromium** only for the optional local browser E2E suite.
+- **Docker with Compose v2** only for the container workflow.
 
 ```bash
 python -m pip install --require-hashes -r requirements.lock
@@ -142,6 +214,26 @@ package-data), so an installed package serves it from any working
 directory; a source-tree run works unchanged. Missing assets are not
 served silently: `/` then answers one `404 frontend_not_installed`
 detail while the API keeps working.
+
+## Configuration
+
+All settings are optional. Environment variables are read when `create_app()`
+runs; an explicit `create_app(...)` argument wins over the corresponding
+variable, and an invalid value fails fast at construction instead of silently
+disabling a guard.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PASSORCH_JOB_DB` | unset (memory only) | Path to the shared SQLite file for jobs and target instances. One file, one worker process. |
+| `PASSORCH_API_TOKEN` | unset (auth off) | Single shared bearer token required for state-changing requests; reads stay unauthenticated. |
+| `PASSORCH_RATE_LIMIT` | `120` | Maximum state-changing requests per client address per window. |
+| `PASSORCH_RATE_WINDOW_SECONDS` | `60` | Rate-limit window length (may be fractional). |
+| `PASSORCH_MAX_BODY_BYTES` | `65536` | Maximum request body accepted for a mutation. |
+| `PASSORCH_TRUSTED_PROXIES` | unset | Comma-separated exact proxy IPs whose `X-Forwarded-For` hop is trusted for rate-limit keying. |
+
+`PASSORCH_JOB_DB` is the only variable that creates state on disk. Unset or
+blank means everything stays in memory. See **Persistence**, **Rate Limiting**,
+**Authentication** and **Trusted proxies** below for the exact behaviour.
 
 ## Running
 
@@ -290,6 +382,8 @@ hash-pinned `requirements.lock` must be regenerated by hand before merge
 
 ## Testing
 
+The release gate used for the current UI work:
+
 ```bash
 # Python tests (pyproject already adds -q; a second -q would hide the summary count)
 python -m pytest --tb=short
@@ -300,16 +394,29 @@ python -m ruff check .
 # Typing gate (app/api + app/engines)
 python -m mypy app/api app/engines
 
-# JavaScript tests (requires Node.js 20+; this is the CI invocation)
+# Dependency-lock consistency
+python scripts/check_dependency_lock.py
+
+# JavaScript tests (requires Node.js 20+; 65 suites / 308 tests at v0.1.0)
+node --test --test-reporter=tap
+
+# The same suite through pytest (the CI invocation; proves Node discovery works)
 python -m pytest tests/test_frontend_js_execution.py
 
-# ...or directly
-node --test frontend-tests/*.test.mjs
+# Whitespace check over the working tree
+git diff --check
 
 # Browser end-to-end tests (optional, local only - requires Playwright;
 # skips itself cleanly when the package is absent, and CI does not run them)
 python -m pytest tests/test_browser_e2e.py --tb=short
 ```
+
+The Node harness (`frontend-tests/`) runs the real views against a scripted
+`fetch` and a DOM shim; the Python frontend suites additionally pin the safety
+boundary, schema field agreement, API allowlists and style coverage. The
+Playwright suite drives the real SPA in Chromium against a live in-process
+server and covers routing, forms, job lifecycle, export download and the main
+cross-layer workflows.
 
 ## Documentation
 
@@ -320,6 +427,7 @@ python -m pytest tests/test_browser_e2e.py --tb=short
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Contributors | Toolchain, commands, enforced conventions, protected files, how to extend |
 | [docs/DEMO.md](docs/DEMO.md) | Evaluators | Copy-paste `curl` tour: health → jobs → persistence → auth → Docker |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Everyone | What the product deliberately does not do |
+| [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | Evaluators / release managers | v0.1.0 scope, verification checklist, and explicit non-goals |
 
 ## Project Structure
 
