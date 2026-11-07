@@ -778,3 +778,30 @@ def test_jobs_view_submit_guard_resets_in_finally() -> None:
     src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
     block = src[src.find("async function submitJob") : src.find("function createdSummary")]
     assert "submittingJob = false" in block
+
+
+# --------------------------------------------------------------------------- #
+# Detail selection synchronization (page-scoped selection)
+# --------------------------------------------------------------------------- #
+
+
+def test_jobs_view_detail_selection_is_scoped_to_the_visible_page() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "function syncDetailWithVisibleJobs(jobs)" in src
+    assert "visibleJobIds = new Set(jobs.map((job) => job.job_id));" in src
+    assert (
+        "if (isNonEmptyString(detailSelectedJobId) && !visibleJobIds.has(detailSelectedJobId))"
+        not in src
+    )
+    assert "detailRenderedJobId" in src
+    assert "const renderedExcluded =" in src
+    assert "syncDetailWithVisibleJobs(jobs);" in src
+    assert "No job selected" in src
+    assert "Select a job from the current list to inspect its details." in src
+
+
+def test_jobs_view_cleared_selection_cannot_be_repainted_by_a_stale_response() -> None:
+    src = _read(FRONTEND_DIR / "js" / "views" / "jobs.js")
+    assert "detailGeneration += 1;" in src
+    assert "if (generation !== detailGeneration || detailSelectedJobId !== jobId)" in src
+    assert 'button("Details", () => renderDetail(job.job_id))' in src

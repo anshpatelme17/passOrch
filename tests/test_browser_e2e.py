@@ -278,6 +278,46 @@ def test_jobs_list_pagination_filters_and_sort(page: Page) -> None:
         expect(page.get_by_text("51 recorded job(s), latest first.")).to_be_visible()
 
 
+def test_jobs_detail_clears_when_the_status_filter_excludes_the_selected_job(
+    page: Page,
+) -> None:
+    """Manual acceptance: a filtered-out job must not linger in the detail panel."""
+
+    with _live_server(_fresh_app()) as base:
+        _seed_jobs(base, 2)
+        page.goto(f"{base}/#/jobs")
+        expect(page.get_by_text("2 recorded job(s), latest first.")).to_be_visible()
+
+        selected_id = page.locator("table code").first.text_content()
+        page.get_by_role("button", name="Details").first.click()
+        expect(page.get_by_text(f"Job {selected_id}")).to_be_visible()
+        expect(
+            page.get_by_text(
+                "This job was denied by the execution policy. No engine was executed."
+            )
+        ).to_be_visible()
+
+        # Both seeded jobs are denied, so this filter has no matches.
+        page.locator("#jobs-filter-status").select_option("simulated")
+        expect(page.get_by_text("No jobs match your filters")).to_be_visible()
+        expect(page.get_by_text("No job selected", exact=True)).to_be_visible()
+        expect(
+            page.get_by_text(
+                "Select a job from the current list to inspect its details.", exact=True
+            )
+        ).to_be_visible()
+        expect(page.get_by_text(f"Job {selected_id}")).to_have_count(0)
+
+        # Clearing the filter restores the list but must not restore the
+        # cleared selection; a different visible job can then be opened.
+        page.locator("#jobs-filter-status").select_option("")
+        expect(page.get_by_text("2 recorded job(s), latest first.")).to_be_visible()
+        second_id = page.locator("table code").nth(1).text_content()
+        page.get_by_role("button", name="Details").nth(1).click()
+        expect(page.get_by_text(f"Job {second_id}")).to_be_visible()
+        expect(page.get_by_text(f"Job {selected_id}")).to_have_count(0)
+
+
 def test_export_json_downloads_the_envelope_and_cleans_up(page: Page) -> None:
     """M2.3 - a real browser downloads the M2.1 envelope through the M2.2 UI.
 

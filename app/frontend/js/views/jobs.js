@@ -74,6 +74,26 @@ let filterSlot = null;
 let exportStatusSlot = null;
 let detailSelectedJobId = "";
 /**
+ * The job whose details are actually painted in the detail slot (or the job
+ * whose pending/error state is painted). Kept separately from the selection so
+ * reconciliation can detect a panel that outlived its selection marker.
+ */
+let detailRenderedJobId = "";
+/**
+ * Monotonic generation for the detail-request lifecycle. A detail response is
+ * applied only while it is still the newest request *and* the job it belongs
+ * to is still selected. Clearing the selection (for example because a filter
+ * or page change removed the job) therefore cannot be undone by a response
+ * that was already in flight.
+ */
+let detailGeneration = 0;
+/**
+ * Job ids on the most recently applied list page. Selection is page-scoped:
+ * details may only refer to a job the operator can currently see.
+ * @type {Set<string>}
+ */
+let visibleJobIds = new Set();
+/**
  * Monotonic generation for the list-request lifecycle. Every `renderList()`
  * call takes a fresh generation and applies its findings - data, loading and
  * error state alike - only while it is still the most recent one and while
@@ -551,6 +571,10 @@ async function renderList() {
   );
   const total = res.data && typeof res.data.total === "number" ? res.data.total : jobs.length;
   paginationState.total = total;
+  // The selection is scoped to the page that was just rendered. If a filter,
+  // sort or pagination change removed the selected job, its details must not
+  // outlive the row (and its stale response must not repaint the panel).
+  syncDetailWithVisibleJobs(jobs);
 
   if (jobs.length === 0 && paginationState.offset === 0) {
     render(slot, [
@@ -635,18 +659,68 @@ async function renderList() {
 
 /* ---- detail --------------------------------------------------------------- */
 
+/** The neutral detail state used both on mount and after a selection is cleared. */
+function noJobSelectedState() {
+  return empty(
+    "No job selected",
+    "Select a job from the current list to inspect its details."
+  );
+}
+
+/**
+ * Clear the selected job and invalidate any detail request still in flight.
+ * The visible-id set is owned by the list response, so it is deliberately not
+ * touched here.
+ */
+function clearSelectedDetail() {
+  detailSelectedJobId = "";
+  detailRenderedJobId = "";
+  detailGeneration += 1;
+  exportStatusSlot = null;
+  if (detailSlot) {
+    render(detailSlot, [noJobSelectedState()]);
+  }
+}
+
+/**
+ * Reconcile the detail panel with the page that was just applied. Called only
+ * after a successful list response, so a transient request failure never
+ * discards a selection that may still be valid.
+ *
+ * Both the selection marker and the job actually painted in the panel are
+ * checked. They normally move together, but tracking the rendered identity
+ * separately means a panel that somehow outlived a cleared selection marker
+ * still cannot survive a list response that excludes it.
+ */
+function syncDetailWithVisibleJobs(jobs) {
+  visibleJobIds = new Set(jobs.map((job) => job.job_id));
+  const selected = isNonEmptyString(detailSelectedJobId) ? detailSelectedJobId : "";
+  const rendered = isNonEmptyString(detailRenderedJobId) ? detailRenderedJobId : "";
+  const selectedExcluded = selected !== "" && !visibleJobIds.has(selected);
+  const renderedExcluded = rendered !== "" && !visibleJobIds.has(rendered);
+  const panelWithoutSelection = selected === "" && rendered !== "";
+  if (selectedExcluded || renderedExcluded || panelWithoutSelection) {
+    clearSelectedDetail();
+  }
+}
+
 async function renderDetail(jobId) {
   if (!detailSlot) {
     return;
   }
   if (!isNonEmptyString(jobId)) {
-    detailSelectedJobId = "";
-    render(detailSlot, [empty("No job selected", "Pick a job from the list above.")]);
+    clearSelectedDetail();
     return;
   }
+  const generation = ++detailGeneration;
   detailSelectedJobId = jobId;
+  detailRenderedJobId = jobId;
   render(detailSlot, [pending("Loading job details...")]);
   const res = await api.get(`/api/jobs/${jobId}`);
+  if (generation !== detailGeneration || detailSelectedJobId !== jobId) {
+    // A newer selection or a list reconciliation has superseded this request.
+    return;
+  }
   if (!res.ok) {
     // 404 job_not_found arrives as the shared object detail; describeError
     // renders it as "<message> (<code>)".
@@ -659,11 +733,14 @@ async function renderDetail(jobId) {
   const job = res.data;
   if (job === null || typeof job !== "object" || !isNonEmptyString(job.job_id)) {
     detailSelectedJobId = "";
+    detailRenderedJobId = "";
     render(detailSlot, [
       empty("No job returned", "The API answered without a usable job record."),
     ]);
     return;
   }
+  // The response is authoritative for what is now painted.
+  detailRenderedJobId = job.job_id;
   // A fresh status slot per render: the export controls never carry a stale
   // "downloaded"/error message over to a different job's detail.
   exportStatusSlot = h("div", { class: "section-body" });
@@ -863,6 +940,11 @@ async function renderJobs(root) {
   filterSlot = h("div", { class: "section-body" });
 
   formState = { target: "", mode: "simulated", reference: "", instance_id: "" };
+  detailSelectedJobId = "";
+  detailRenderedJobId = "";
+  detailGeneration += 1;
+  visibleJobIds = new Set();
+  exportStatusSlot = null;
   paginationState = {
     limit: 50,
     offset: 0,
@@ -904,9 +986,7 @@ async function renderJobs(root) {
   renderFilters();
   renderForm();
   await renderList();
-  render(detailSlot, [
-    empty("No job selected", "Choose a job from the list above to see its recorded preview."),
-  ]);
+  render(detailSlot, [noJobSelectedState()]);
 }
 
 /* ---- registration --------------------------------------------------------- */

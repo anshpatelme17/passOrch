@@ -77,6 +77,17 @@ async function chooseInstance(instanceId) {
   sel.dispatchEvent({ type: "change", target: sel });
   await flush();
 }
+/** Choose a list filter through the real change handler. */
+async function setFilter(id, value) {
+  const sel = select(id);
+  sel.value = value;
+  sel.dispatchEvent({ type: "change", target: sel });
+  await flush();
+}
+/** The per-row "Details" buttons, in list order. */
+function detailButtons() {
+  return root().querySelectorAll("button").filter((b) => b.textContent === "Details");
+}
 
 beforeEach(() => {
   start();
@@ -407,6 +418,274 @@ describe("jobs - details", () => {
     click(root().querySelectorAll("button").find((b) => b.textContent === "Details"));
     await flush(12);
     assert.match(rootText(root()), /No job returned|without a usable job record/);
+  });
+});
+
+describe("jobs - detail selection synchronization", () => {
+  it("clears the details when a filter removes the selected job", async () => {
+    let listResponse = TWO_JOBS;
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: listResponse }),
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+
+    listResponse = { jobs: [TWO_JOBS.jobs[1]], count: 1, total: 1 };
+    await setFilter("jobs-filter-status", "denied");
+
+    const text = rootText(root());
+    assert.match(text, /No job selected/);
+    assert.match(text, /Select a job from the current list to inspect its details\./);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+  });
+
+  it("a pending detail response cannot restore an excluded job", async () => {
+    let listResponse = TWO_JOBS;
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: listResponse }),
+    });
+    const fixtureFetch = env.fetch;
+    let resolveDetail;
+    const pendingDetail = new Promise((resolve) => {
+      resolveDetail = resolve;
+    });
+    globalThis.fetch = (url, opts) => {
+      if (String(url) === `/api/jobs/${FULL}`) {
+        return pendingDetail;
+      }
+      return fixtureFetch(url, opts);
+    };
+
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush();
+    assert.ok(resolveDetail, "the detail request must be issued");
+
+    listResponse = EMPTY_LIST;
+    await setFilter("jobs-filter-status", "denied");
+    assert.match(rootText(root()), /No job selected/);
+
+    resolveDetail(new FakeResponse(200, simulatedJob(null, FULL)));
+    await flush(12);
+
+    const text = rootText(root());
+    assert.match(text, /No job selected/);
+    assert.match(text, /Select a job from the current list to inspect its details\./);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+  });
+
+  it("reconciles the job actually painted, not just the selection marker", async () => {
+    const otherJobId = "77777777-7777-4777-8777-777777777777";
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: TWO_JOBS }),
+      // Simulate a detail panel whose painted job differs from the selection.
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, otherJobId) },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${otherJobId}`));
+
+    // The list still contains FULL, so the old selection-only check would keep
+    // the panel; the painted job itself is not visible on this page.
+    await setFilter("jobs-filter-status", "simulated");
+
+    const text = rootText(root());
+    assert.match(text, new RegExp(FULL));
+    assert.match(text, /No job selected/);
+    assert.doesNotMatch(text, new RegExp(`Job ${otherJobId}`));
+  });
+
+  it("retains the details when the selected job survives the filter", async () => {
+    let listResponse = TWO_JOBS;
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: listResponse }),
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+
+    listResponse = { jobs: [TWO_JOBS.jobs[0]], count: 1, total: 1 };
+    await setFilter("jobs-filter-status", "simulated");
+
+    const text = rootText(root());
+    assert.match(text, new RegExp(`Job ${FULL}`));
+    assert.match(text, /Simulated outcome recorded/);
+    assert.doesNotMatch(text, /No job selected/);
+  });
+
+  it("shows the filtered empty list without stale details", async () => {
+    let listResponse = TWO_JOBS;
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: listResponse }),
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+
+    listResponse = EMPTY_LIST;
+    await setFilter("jobs-filter-status", "denied");
+
+    const text = rootText(root());
+    assert.match(text, /No jobs match your filters/);
+    assert.match(text, /Adjust or clear the filters above to see recorded jobs again\./);
+    assert.match(text, /No job selected/);
+    assert.match(text, /Select a job from the current list to inspect its details\./);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+    assert.doesNotMatch(text, /No jobs recorded yet/);
+  });
+
+  it("does not restore a cleared selection when the filters are cleared", async () => {
+    let listResponse = TWO_JOBS;
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: listResponse }),
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+
+    listResponse = { jobs: [TWO_JOBS.jobs[1]], count: 1, total: 1 };
+    await setFilter("jobs-filter-status", "denied");
+    assert.match(rootText(root()), /No job selected/);
+
+    listResponse = TWO_JOBS;
+    await setFilter("jobs-filter-status", "");
+
+    const text = rootText(root());
+    assert.match(text, new RegExp(FULL), "the list must show the job again");
+    assert.match(text, /No job selected/);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+  });
+
+  it("loads the details of another visible job", async () => {
+    start({
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+      "GET /api/jobs/22222222-2222-4222-8222-222222222222": {
+        status: 200,
+        body: { ...deniedJob(), job_id: "22222222-2222-4222-8222-222222222222" },
+      },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+    assert.match(rootText(root()), /Simulated outcome recorded/);
+
+    click(detailButtons()[1]);
+    await flush(12);
+
+    const text = rootText(root());
+    assert.match(text, /Job 22222222-2222-4222-8222-222222222222/);
+    assert.match(text, /This job was denied by the execution policy/);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+  });
+
+  it("scopes the details to the page that is showing", async () => {
+    const pageTwoJobId = "99999999-9999-4999-8999-999999999999";
+    const pageOne = {
+      jobs: [
+        TWO_JOBS.jobs[0],
+        ...Array.from({ length: 49 }, (_, i) => ({
+          job_id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(i).padStart(12, "0")}`,
+          status: "simulated",
+          created_at: 1700000000 - i,
+          target: "pdf-document",
+        })),
+      ],
+      count: 51,
+      total: 51,
+    };
+    const pageTwo = {
+      jobs: [
+        {
+          job_id: pageTwoJobId,
+          status: "simulated",
+          created_at: 1700000000,
+          target: "pdf-document",
+        },
+      ],
+      count: 1,
+      total: 51,
+    };
+    start({
+      "GET /api/jobs": () => {
+        const call = env.calls
+          .filter((c) => c.method === "GET" && String(c.url).split("?")[0] === "/api/jobs")
+          .pop();
+        const offset = Number(
+          new URL(call.url, "http://passorch.invalid").searchParams.get("offset") || "0"
+        );
+        return { status: 200, body: offset >= 50 ? pageTwo : pageOne };
+      },
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+      [`GET /api/jobs/${pageTwoJobId}`]: {
+        status: 200,
+        body: simulatedJob(null, pageTwoJobId),
+      },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Next"));
+    await flush();
+
+    let text = rootText(root());
+    assert.match(text, new RegExp(pageTwoJobId), "the second page must render");
+    assert.match(text, /No job selected/);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+
+    click(detailButtons()[0]);
+    await flush(12);
+    text = rootText(root());
+    assert.match(text, new RegExp(`Job ${pageTwoJobId}`));
+    assert.doesNotMatch(text, /No job selected/);
+  });
+
+  it("clears the details when the selected job is deleted", async () => {
+    let listResponse = TWO_JOBS;
+    start({
+      "GET /api/jobs": () => ({ status: 200, body: listResponse }),
+      [`GET /api/jobs/${FULL}`]: { status: 200, body: simulatedJob(null, FULL) },
+      "DELETE /api/jobs/*": () => {
+        listResponse = { jobs: [TWO_JOBS.jobs[1]], count: 1, total: 1 };
+        return { status: 204, body: undefined };
+      },
+    });
+    showRoute("#/jobs");
+    await flush();
+    click(detailButtons()[0]);
+    await flush(12);
+    assert.match(rootText(root()), new RegExp(`Job ${FULL}`));
+
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Delete"));
+    await flush();
+    click(root().querySelectorAll("button").find((b) => b.textContent === "Yes, delete"));
+    await flush(14);
+
+    const text = rootText(root());
+    assert.match(text, /No job selected/);
+    assert.match(text, /Select a job from the current list to inspect its details\./);
+    assert.doesNotMatch(text, new RegExp(`Job ${FULL}`));
+    assert.match(text, /22222222-2222-4222-8222-222222222222/);
   });
 });
 
